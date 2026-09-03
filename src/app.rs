@@ -148,6 +148,7 @@ impl App {
             surface.edge_hit = sm.resting_edge();
         }
         if sm.apply_event(event, surface, mascot.level, &mut mascot.rng) {
+            crate::logging::log_animation(mascot.id, &format!("{event:?}"), sm.current_key());
             mascot.sm_state = sm.snapshot();
             mascot.ticks_since_interaction = 0;
             if event == EngineEventKind::FlingStart {
@@ -196,6 +197,9 @@ fn step_one_mascot(mascot: &mut MascotInstance, screen: &Rect, monitors: &[Rect]
     let landed_this_tick = surface.edge_hit == Some(Edge::Bottom);
     let hit_ceiling_this_tick = surface.edge_hit == Some(Edge::Top);
     let out = sm.step(surface, mascot.level, &mut mascot.rng);
+    if out.changed_animation {
+        crate::logging::log_animation(mascot.id, "auto", sm.current_key());
+    }
 
     let mut dx = out.dx;
     let mut dy = out.dy;
@@ -228,7 +232,9 @@ fn step_one_mascot(mascot: &mut MascotInstance, screen: &Rect, monitors: &[Rect]
     mascot.window.move_to(mascot.x, mascot.y);
 
     if sm.current_key() == "fling" && surface.edge_hit.is_some() {
-        sm.apply_event(EngineEventKind::FlingEnd, surface, mascot.level, &mut mascot.rng);
+        if sm.apply_event(EngineEventKind::FlingEnd, surface, mascot.level, &mut mascot.rng) {
+            crate::logging::log_animation(mascot.id, "FlingEnd", sm.current_key());
+        }
         mascot.fling_velocity = None;
     }
 
@@ -243,7 +249,9 @@ fn step_one_mascot(mascot: &mut MascotInstance, screen: &Rect, monitors: &[Rect]
 
     mascot.ticks_since_interaction += 1;
     if mascot.ticks_since_interaction == IDLE_THRESHOLD_TICKS {
-        sm.apply_event(EngineEventKind::Idle, surface, mascot.level, &mut mascot.rng);
+        if sm.apply_event(EngineEventKind::Idle, surface, mascot.level, &mut mascot.rng) {
+            crate::logging::log_animation(mascot.id, "Idle", sm.current_key());
+        }
     }
 
     mascot.sm_state = sm.snapshot();
