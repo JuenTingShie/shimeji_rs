@@ -1,7 +1,7 @@
 use shimeji::environment::surface::query_surface;
 use shimeji::environment::win32::{Win32MonitorSource, Win32WindowSource};
 use shimeji::environment::{EnvironmentTracker, Rect};
-use shimeji::format::animation::EngineEventKind;
+use shimeji::format::animation::{Edge, EngineEventKind};
 use shimeji::format::bundle::MascotBundle;
 use shimeji::format::sprites::{decode_sprite, sprite_filename};
 use shimeji::importer::catalog::CatalogEntry;
@@ -131,14 +131,15 @@ impl App {
     }
 
     pub fn handle_engine_event(&mut self, instance_id: u32, event: EngineEventKind, fling_velocity: Option<(f64, f64)>) {
-        let (screen, windows) = self.environment.poll(Instant::now());
+        let (screen, monitors, windows) = self.environment.poll(Instant::now());
         let screen = *screen;
+        let monitors = monitors.to_vec();
         let windows = windows.to_vec();
         let Some(mascot) = self.mascots.iter_mut().find(|m| m.id == instance_id) else { return };
 
         let mut sm = StateMachine::from_snapshot(&mascot.bundle.animation, &mascot.sm_state);
         let (pending_dx, pending_dy) = sm.pending_movement();
-        let surface = query_surface(mascot.x, mascot.y, SPRITE_SIZE, SPRITE_SIZE, pending_dx, pending_dy, &screen, &windows);
+        let surface = query_surface(mascot.x, mascot.y, SPRITE_SIZE, SPRITE_SIZE, pending_dx, pending_dy, &screen, &monitors, &windows);
         if sm.apply_event(event, surface, mascot.level, &mut mascot.rng) {
             mascot.sm_state = sm.snapshot();
             mascot.ticks_since_interaction = 0;
@@ -151,17 +152,18 @@ impl App {
     }
 
     pub fn tick(&mut self, now: Instant) {
-        let (screen, windows) = self.environment.poll(now);
+        let (screen, monitors, windows) = self.environment.poll(now);
         let screen = *screen;
+        let monitors = monitors.to_vec();
         let windows = windows.to_vec();
 
         for mascot in &mut self.mascots {
-            step_one_mascot(mascot, &screen, &windows);
+            step_one_mascot(mascot, &screen, &monitors, &windows);
         }
     }
 }
 
-fn step_one_mascot(mascot: &mut MascotInstance, screen: &Rect, windows: &[Rect]) {
+fn step_one_mascot(mascot: &mut MascotInstance, screen: &Rect, monitors: &[Rect], windows: &[Rect]) {
     let mut sm = StateMachine::from_snapshot(&mascot.bundle.animation, &mascot.sm_state);
 
     // The surface query needs this tick's *total* proposed movement to predict edge crossings
@@ -181,8 +183,10 @@ fn step_one_mascot(mascot: &mut MascotInstance, screen: &Rect, windows: &[Rect])
         anim_dx + fling_dx,
         anim_dy + fling_dy,
         screen,
+        monitors,
         windows,
     );
+    let landed_this_tick = surface.edge_hit == Some(Edge::Bottom);
     let out = sm.step(surface, mascot.level, &mut mascot.rng);
 
     let mut dx = out.dx;
@@ -194,7 +198,20 @@ fn step_one_mascot(mascot: &mut MascotInstance, screen: &Rect, windows: &[Rect])
     }
 
     mascot.x += dx;
-    mascot.y += dy;
+    if landed_this_tick {
+        // The fall animation's own dy is a fixed per-tick step that essentially never divides
+        // evenly into "distance to the floor", so the tick that reports the BOTTOM edge would
+        // otherwise land a few pixels short of surface.floor_y instead of exactly on it —
+        // permanently, since nothing else corrects it afterward. That gap can exceed
+        // query_surface's ground tolerance, which misclassifies an already-landed mascot as
+        // still airborne on every later tick; since ground edge detection only runs while
+        // grounded, that silently disables it and lets the mascot walk straight off the real
+        // screen edge undetected. Snap to the exact floor instead of trusting the animation's
+        // own dy (now discarded in favor of this) to land there.
+        mascot.y = surface.floor_y - SPRITE_SIZE;
+    } else {
+        mascot.y += dy;
+    }
     mascot.window.move_to(mascot.x, mascot.y);
 
     if sm.current_key() == "fling" && surface.edge_hit.is_some() {

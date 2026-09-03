@@ -4,6 +4,17 @@ use crate::state_machine::{SurfaceContext, SurfaceKind};
 
 const GROUND_TOLERANCE: i32 = 2;
 
+/// The floor height (bottom y) of whichever physical monitor's horizontal span contains `x`,
+/// or `None` if no monitor covers that x at all (off the edge of every screen). Looking this up
+/// per-x, instead of using a single virtual-desktop bounding box, matters as soon as two
+/// monitors differ in height: the bounding box's bottom is the *tallest* monitor's bottom, so a
+/// mascot standing over a shorter monitor would treat empty space below it — past that
+/// monitor's real edge, not corresponding to any screen — as walkable floor, and fall or walk
+/// straight through into it.
+fn floor_at(x: i32, monitors: &[Rect]) -> Option<i32> {
+    monitors.iter().find(|m| m.left <= x && x < m.right).map(|m| m.bottom)
+}
+
 pub fn query_surface(
     mascot_x: i32,
     mascot_y: i32,
@@ -12,6 +23,7 @@ pub fn query_surface(
     dx: i32,
     dy: i32,
     screen: &Rect,
+    monitors: &[Rect],
     windows: &[Rect],
 ) -> SurfaceContext {
     let feet_y = mascot_y + mascot_height;
@@ -20,35 +32,63 @@ pub fn query_surface(
     // The floor directly under the mascot: the topmost window edge the mascot's FEET haven't
     // already fallen past (comparing against feet_y, not mascot_y — a window between the
     // mascot's top and its feet has already been passed, not one still ahead to land on), else
-    // the screen bottom.
+    // the real monitor floor under this x, else (no monitor covers it — shouldn't normally
+    // happen) the virtual-desktop bounding box as a last resort.
     let hosting = windows
         .iter()
         .filter(|w| w.left <= center_x && center_x < w.right && w.top >= feet_y - GROUND_TOLERANCE)
         .min_by_key(|w| w.top)
         .copied();
-    let floor_y = hosting.map(|w| w.top).unwrap_or(screen.bottom);
+    let floor_y = hosting
+        .map(|w| w.top)
+        .or_else(|| floor_at(center_x, monitors))
+        .unwrap_or(screen.bottom);
 
     let on_ground = (floor_y - feet_y).abs() <= GROUND_TOLERANCE;
 
     if on_ground {
-        let floor = hosting.unwrap_or(*screen);
-        let mut edge_hit = None;
-        if dx < 0 && mascot_x + dx <= floor.left {
-            edge_hit = Some(Edge::Left);
-        } else if dx > 0 && mascot_x + mascot_width + dx >= floor.right {
-            edge_hit = Some(Edge::Right);
+        if let Some(w) = hosting {
+            let mut edge_hit = None;
+            if dx < 0 && mascot_x + dx <= w.left {
+                edge_hit = Some(Edge::Left);
+            } else if dx > 0 && mascot_x + mascot_width + dx >= w.right {
+                edge_hit = Some(Edge::Right);
+            }
+            return SurfaceContext { kind: SurfaceKind::Ground, edge_hit, floor_y };
         }
-        return SurfaceContext { kind: SurfaceKind::Ground, edge_hit };
+
+        // Standing on a monitor's own desktop floor, not a window: this is an edge only if
+        // stepping past it lands somewhere with a *different* floor height (a real cliff — a
+        // monitor boundary with no floor, or an adjacent monitor whose floor doesn't line up),
+        // not merely a different monitor. Same-height neighbors (the common side-by-side case)
+        // stay walkable straight across the seam, exactly like the old single-bounding-box
+        // floor did — only a genuine height mismatch (this bug's report: a vertical + a
+        // horizontal monitor) now reads as an edge instead of phantom floor/empty air.
+        let mut edge_hit = None;
+        if dx < 0 {
+            let leading_x = mascot_x + dx;
+            let continues = matches!(floor_at(leading_x, monitors), Some(h) if (h - floor_y).abs() <= GROUND_TOLERANCE);
+            if !continues {
+                edge_hit = Some(Edge::Left);
+            }
+        } else if dx > 0 {
+            let leading_x = mascot_x + mascot_width + dx;
+            let continues = matches!(floor_at(leading_x, monitors), Some(h) if (h - floor_y).abs() <= GROUND_TOLERANCE);
+            if !continues {
+                edge_hit = Some(Edge::Right);
+            }
+        }
+        return SurfaceContext { kind: SurfaceKind::Ground, edge_hit, floor_y };
     }
 
     // Not resting on the floor yet — if this tick's fall would reach or pass it, report the
     // BOTTOM edge now so the caller's border transition (e.g. fall -> bounce) fires on landing,
     // rather than the mascot falling straight through and off the bottom of the world.
     if dy > 0 && feet_y + dy >= floor_y {
-        return SurfaceContext { kind: SurfaceKind::Air, edge_hit: Some(Edge::Bottom) };
+        return SurfaceContext { kind: SurfaceKind::Air, edge_hit: Some(Edge::Bottom), floor_y };
     }
 
-    SurfaceContext { kind: SurfaceKind::Air, edge_hit: None }
+    SurfaceContext { kind: SurfaceKind::Air, edge_hit: None, floor_y }
 }
 
 #[cfg(test)]
@@ -56,30 +96,31 @@ mod tests {
     use super::*;
 
     const SCREEN: Rect = Rect { left: 0, top: 0, right: 1920, bottom: 1080 };
+    const MONITORS: [Rect; 1] = [SCREEN];
 
     #[test]
     fn ground_with_no_windows_is_the_screen_floor() {
-        let ctx = query_surface(500, 1080 - 64, 64, 64, 0, 0, &SCREEN, &[]);
+        let ctx = query_surface(500, 1080 - 64, 64, 64, 0, 0, &SCREEN, &MONITORS, &[]);
         assert_eq!(ctx.kind, SurfaceKind::Ground);
         assert_eq!(ctx.edge_hit, None);
     }
 
     #[test]
     fn walking_left_off_the_screen_hits_left_edge() {
-        let ctx = query_surface(0, 1080 - 64, 64, 64, -2, 0, &SCREEN, &[]);
+        let ctx = query_surface(0, 1080 - 64, 64, 64, -2, 0, &SCREEN, &MONITORS, &[]);
         assert_eq!(ctx.edge_hit, Some(Edge::Left));
     }
 
     #[test]
     fn walking_right_off_the_screen_hits_right_edge() {
-        let ctx = query_surface(1920 - 64, 1080 - 64, 64, 64, 2, 0, &SCREEN, &[]);
+        let ctx = query_surface(1920 - 64, 1080 - 64, 64, 64, 2, 0, &SCREEN, &MONITORS, &[]);
         assert_eq!(ctx.edge_hit, Some(Edge::Right));
     }
 
     #[test]
     fn standing_on_top_of_another_window_uses_that_window_as_ground() {
         let browser = Rect { left: 200, top: 400, right: 900, bottom: 900 };
-        let ctx = query_surface(500, 400 - 64, 64, 64, 0, 0, &SCREEN, &[browser]);
+        let ctx = query_surface(500, 400 - 64, 64, 64, 0, 0, &SCREEN, &MONITORS, &[browser]);
         assert_eq!(ctx.kind, SurfaceKind::Ground);
         assert_eq!(ctx.edge_hit, None);
     }
@@ -87,13 +128,13 @@ mod tests {
     #[test]
     fn walking_off_the_left_edge_of_a_hosting_window() {
         let browser = Rect { left: 200, top: 400, right: 900, bottom: 900 };
-        let ctx = query_surface(200, 400 - 64, 64, 64, -2, 0, &SCREEN, &[browser]);
+        let ctx = query_surface(200, 400 - 64, 64, 64, -2, 0, &SCREEN, &MONITORS, &[browser]);
         assert_eq!(ctx.edge_hit, Some(Edge::Left));
     }
 
     #[test]
     fn falling_in_open_air_is_air_with_no_edge() {
-        let ctx = query_surface(500, 300, 64, 64, 0, 15, &SCREEN, &[]);
+        let ctx = query_surface(500, 300, 64, 64, 0, 15, &SCREEN, &MONITORS, &[]);
         assert_eq!(ctx.kind, SurfaceKind::Air);
         assert_eq!(ctx.edge_hit, None);
     }
@@ -101,7 +142,7 @@ mod tests {
     #[test]
     fn falling_past_the_screen_floor_this_tick_reports_bottom_edge() {
         // feet at 1075, falling by 15 would put feet at 1090 — past the 1080 floor.
-        let ctx = query_surface(500, 1075 - 64, 64, 64, 0, 15, &SCREEN, &[]);
+        let ctx = query_surface(500, 1075 - 64, 64, 64, 0, 15, &SCREEN, &MONITORS, &[]);
         assert_eq!(ctx.edge_hit, Some(Edge::Bottom));
     }
 
@@ -113,7 +154,7 @@ mod tests {
         // mascot fell near real desktop windows instead of only landing on ones still ahead.
         let already_passed = Rect { left: 0, top: 300, right: 1920, bottom: 350 };
         // mascot top at 500, feet at 564 — well past the window's top (300) and bottom (350).
-        let ctx = query_surface(500, 500, 64, 64, 0, 15, &SCREEN, &[already_passed]);
+        let ctx = query_surface(500, 500, 64, 64, 0, 15, &SCREEN, &MONITORS, &[already_passed]);
         assert_eq!(ctx.edge_hit, None, "a window already fallen past must not be treated as the floor");
     }
 
@@ -124,7 +165,7 @@ mod tests {
         let mut y = 100;
         let mut hit_bottom = false;
         for _ in 0..200 {
-            let ctx = query_surface(500, y, 64, 64, 0, 15, &SCREEN, &[]);
+            let ctx = query_surface(500, y, 64, 64, 0, 15, &SCREEN, &MONITORS, &[]);
             if ctx.edge_hit == Some(Edge::Bottom) {
                 hit_bottom = true;
                 break;
@@ -133,5 +174,50 @@ mod tests {
             assert!(y < SCREEN.bottom + 100, "mascot fell past the floor without ever hitting BOTTOM edge");
         }
         assert!(hit_bottom, "mascot never reported reaching the floor while falling");
+    }
+
+    // Regression tests for a real bug: a two-monitor setup with one horizontal (1920x1080) and
+    // one vertical (1080x1920) monitor side by side used to compute the "floor" from
+    // combine_rects' virtual-desktop bounding box, whose bottom is the *taller* monitor's
+    // bottom (1920) everywhere — including over the horizontal monitor, where nothing exists
+    // below y=1080. A mascot there would fall through its own monitor's real floor into that
+    // phantom space, or use the wrong landing height entirely.
+
+    const HORIZONTAL: Rect = Rect { left: 0, top: 0, right: 1920, bottom: 1080 };
+    const VERTICAL: Rect = Rect { left: 1920, top: 0, right: 3000, bottom: 1920 };
+    const MISMATCHED: [Rect; 2] = [HORIZONTAL, VERTICAL];
+
+    #[test]
+    fn falling_over_the_shorter_monitor_lands_on_its_own_floor_not_the_taller_neighbor() {
+        // Bounding box bottom would be 1920 (the vertical monitor's); the real floor here,
+        // over the horizontal monitor, is 1080.
+        let ctx = query_surface(500, 1075 - 64, 64, 64, 0, 15, &HORIZONTAL, &MISMATCHED, &[]);
+        assert_eq!(ctx.edge_hit, Some(Edge::Bottom), "must land at the horizontal monitor's own floor (1080), not fall through toward 1920");
+    }
+
+    #[test]
+    fn a_mascot_resting_on_the_shorter_monitor_is_not_reported_as_still_airborne() {
+        let ctx = query_surface(500, 1080 - 64, 64, 64, 0, 0, &HORIZONTAL, &MISMATCHED, &[]);
+        assert_eq!(ctx.kind, SurfaceKind::Ground, "feet at the horizontal monitor's own floor (1080) must read as grounded");
+    }
+
+    #[test]
+    fn walking_from_the_horizontal_monitor_toward_the_taller_vertical_one_hits_an_edge() {
+        // Standing at the right edge of the horizontal monitor (floor 1080), about to step onto
+        // the vertical monitor's x-range, whose floor (1920) is 840px lower — not a walkable
+        // continuation, so this must read as an edge rather than silently teleporting down.
+        let ctx = query_surface(1920 - 64, 1080 - 64, 64, 64, 2, 0, &HORIZONTAL, &MISMATCHED, &[]);
+        assert_eq!(ctx.edge_hit, Some(Edge::Right), "a floor-height mismatch between neighboring monitors must read as an edge");
+    }
+
+    #[test]
+    fn walking_between_two_same_height_monitors_stays_seamless() {
+        // Two ordinary side-by-side monitors at the same height must NOT trigger a spurious
+        // edge at the seam — only an actual height mismatch should.
+        let left_monitor = Rect { left: 0, top: 0, right: 1920, bottom: 1080 };
+        let right_monitor = Rect { left: 1920, top: 0, right: 3840, bottom: 1080 };
+        let monitors = [left_monitor, right_monitor];
+        let ctx = query_surface(1920 - 64, 1080 - 64, 64, 64, 2, 0, &left_monitor, &monitors, &[]);
+        assert_eq!(ctx.edge_hit, None, "same-height neighboring monitors must stay walkable across the seam");
     }
 }

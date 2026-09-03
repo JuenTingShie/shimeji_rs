@@ -16,6 +16,13 @@ pub enum SurfaceKind {
 pub struct SurfaceContext {
     pub kind: SurfaceKind,
     pub edge_hit: Option<Edge>,
+    /// The y coordinate of the floor this query resolved (whichever monitor or window is
+    /// actually under the mascot). A falling mascot's per-tick dy is a fixed animation value
+    /// that will almost never divide evenly into "distance to floor", so the tick that reports
+    /// `edge_hit: Some(Edge::Bottom)` typically lands a few pixels short of `floor_y`, not
+    /// exactly on it. Callers that need to land exactly on the floor (see `app::step_one_mascot`)
+    /// snap to this value instead of trusting the animation's own dy to get there.
+    pub floor_y: i32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -383,7 +390,7 @@ mod tests {
     }
 
     fn no_edge() -> SurfaceContext {
-        SurfaceContext { kind: SurfaceKind::Ground, edge_hit: None }
+        SurfaceContext { kind: SurfaceKind::Ground, edge_hit: None, floor_y: 0 }
     }
 
     #[test]
@@ -412,6 +419,7 @@ mod tests {
         // must eventually leave "fall" once it reaches the floor, not fall forever.
         let schema = schema();
         let screen = crate::environment::Rect { left: 0, top: 0, right: 1920, bottom: 1080 };
+        let monitors = [screen];
         let mut rng = StdRng::seed_from_u64(5);
         let mut y = 100;
         let mut snapshot = StateMachine::initial_snapshot(&schema);
@@ -419,7 +427,7 @@ mod tests {
         for _ in 0..200 {
             let mut sm = StateMachine::from_snapshot(&schema, &snapshot);
             let (_, dy) = sm.pending_movement();
-            let surface = crate::environment::surface::query_surface(500, y, 64, 64, 0, dy, &screen, &[]);
+            let surface = crate::environment::surface::query_surface(500, y, 64, 64, 0, dy, &screen, &monitors, &[]);
             let out = sm.step(surface, 4, &mut rng);
             y += out.dy;
             snapshot = sm.snapshot();
@@ -469,7 +477,7 @@ mod tests {
         sm.force_animation("walk_left");
         let mut rng = StdRng::seed_from_u64(3);
 
-        let hit_left = SurfaceContext { kind: SurfaceKind::Ground, edge_hit: Some(crate::format::animation::Edge::Left) };
+        let hit_left = SurfaceContext { kind: SurfaceKind::Ground, edge_hit: Some(crate::format::animation::Edge::Left), floor_y: 0 };
         sm.step(hit_left, 4, &mut rng);
         assert!(sm.current_key() == "climb_left" || sm.current_key() == "walk_right");
     }
@@ -493,7 +501,7 @@ mod tests {
         sm.force_animation("fling");
         let mut rng = StdRng::seed_from_u64(1);
 
-        let left_edge = SurfaceContext { kind: SurfaceKind::Wall, edge_hit: Some(crate::format::animation::Edge::Left) };
+        let left_edge = SurfaceContext { kind: SurfaceKind::Wall, edge_hit: Some(crate::format::animation::Edge::Left), floor_y: 0 };
         let changed = sm.apply_event(EngineEventKind::FlingEnd, left_edge, 4, &mut rng);
         assert!(changed);
         assert_eq!(sm.current_key(), "climb_left");

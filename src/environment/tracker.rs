@@ -22,6 +22,7 @@ pub struct EnvironmentTracker<M: MonitorSource, W: WindowSource> {
     refresh_interval: Duration,
     last_refresh: Option<Instant>,
     screen_rect: Rect,
+    monitor_rects: Vec<Rect>,
     window_rects: Vec<Rect>,
 }
 
@@ -33,21 +34,27 @@ impl<M: MonitorSource, W: WindowSource> EnvironmentTracker<M, W> {
             refresh_interval,
             last_refresh: None,
             screen_rect: Rect { left: 0, top: 0, right: 0, bottom: 0 },
+            monitor_rects: Vec::new(),
             window_rects: Vec::new(),
         }
     }
 
-    pub fn poll(&mut self, now: Instant) -> (&Rect, &[Rect]) {
+    /// Returns the virtual-desktop bounding box (for whole-desktop left/right world edges),
+    /// the individual per-monitor rects (so callers can find the real floor height under a
+    /// given x, instead of the bounding box's — which is wrong whenever monitors differ in
+    /// height, see `surface::query_surface`), and the tracked top-level window rects.
+    pub fn poll(&mut self, now: Instant) -> (&Rect, &[Rect], &[Rect]) {
         let due = match self.last_refresh {
             None => true,
             Some(last) => now.duration_since(last) >= self.refresh_interval,
         };
         if due {
-            self.screen_rect = combine_rects(&self.monitor_source.monitors());
+            self.monitor_rects = self.monitor_source.monitors();
+            self.screen_rect = combine_rects(&self.monitor_rects);
             self.window_rects = self.window_source.windows();
             self.last_refresh = Some(now);
         }
-        (&self.screen_rect, &self.window_rects)
+        (&self.screen_rect, &self.monitor_rects, &self.window_rects)
     }
 }
 
@@ -98,8 +105,9 @@ mod tests {
         let windows = CountingSource { rects: vec![], calls: Cell::new(0) };
         let mut tracker = EnvironmentTracker::new(monitors, windows, Duration::from_millis(150));
 
-        let (screen, _) = tracker.poll(Instant::now());
+        let (screen, monitors, _) = tracker.poll(Instant::now());
         assert_eq!(*screen, Rect { left: 0, top: 0, right: 3840, bottom: 1080 });
+        assert_eq!(monitors.len(), 2);
     }
 
     #[test]
