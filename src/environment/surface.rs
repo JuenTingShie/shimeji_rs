@@ -15,6 +15,13 @@ fn floor_at(x: i32, monitors: &[Rect]) -> Option<i32> {
     monitors.iter().find(|m| m.left <= x && x < m.right).map(|m| m.bottom)
 }
 
+/// The ceiling height (top y) of whichever physical monitor's horizontal span contains `x`, or
+/// `None` if none covers it. Symmetric to `floor_at` — a mismatched-height monitor pair has a
+/// phantom-ceiling problem too, not just a phantom-floor one.
+fn ceiling_at(x: i32, monitors: &[Rect]) -> Option<i32> {
+    monitors.iter().find(|m| m.left <= x && x < m.right).map(|m| m.top)
+}
+
 pub fn query_surface(
     mascot_x: i32,
     mascot_y: i32,
@@ -27,6 +34,7 @@ pub fn query_surface(
     windows: &[Rect],
 ) -> SurfaceContext {
     let feet_y = mascot_y + mascot_height;
+    let head_y = mascot_y;
     let center_x = mascot_x + mascot_width / 2;
 
     // The floor directly under the mascot: the topmost window edge the mascot's FEET haven't
@@ -34,27 +42,42 @@ pub fn query_surface(
     // mascot's top and its feet has already been passed, not one still ahead to land on), else
     // the real monitor floor under this x, else (no monitor covers it — shouldn't normally
     // happen) the virtual-desktop bounding box as a last resort.
-    let hosting = windows
+    let hosting_floor = windows
         .iter()
         .filter(|w| w.left <= center_x && center_x < w.right && w.top >= feet_y - GROUND_TOLERANCE)
         .min_by_key(|w| w.top)
         .copied();
-    let floor_y = hosting
+    let floor_y = hosting_floor
         .map(|w| w.top)
         .or_else(|| floor_at(center_x, monitors))
         .unwrap_or(screen.bottom);
 
+    // The ceiling directly above the mascot: symmetric to the floor lookup above — the lowest
+    // window edge the mascot's HEAD hasn't already climbed past (a window between the mascot's
+    // head and feet has already been passed, not one still ahead to bump into), else the real
+    // monitor ceiling above this x, else the bounding box as a last resort.
+    let hosting_ceiling = windows
+        .iter()
+        .filter(|w| w.left <= center_x && center_x < w.right && w.bottom <= head_y + GROUND_TOLERANCE)
+        .max_by_key(|w| w.bottom)
+        .copied();
+    let ceiling_y = hosting_ceiling
+        .map(|w| w.bottom)
+        .or_else(|| ceiling_at(center_x, monitors))
+        .unwrap_or(screen.top);
+
     let on_ground = (floor_y - feet_y).abs() <= GROUND_TOLERANCE;
+    let on_ceiling = (head_y - ceiling_y).abs() <= GROUND_TOLERANCE;
 
     if on_ground {
-        if let Some(w) = hosting {
+        if let Some(w) = hosting_floor {
             let mut edge_hit = None;
             if dx < 0 && mascot_x + dx <= w.left {
                 edge_hit = Some(Edge::Left);
             } else if dx > 0 && mascot_x + mascot_width + dx >= w.right {
                 edge_hit = Some(Edge::Right);
             }
-            return SurfaceContext { kind: SurfaceKind::Ground, edge_hit, floor_y };
+            return SurfaceContext { kind: SurfaceKind::Ground, edge_hit, floor_y, ceiling_y };
         }
 
         // Standing on a monitor's own desktop floor, not a window: this is an edge only if
@@ -78,17 +101,54 @@ pub fn query_surface(
                 edge_hit = Some(Edge::Right);
             }
         }
-        return SurfaceContext { kind: SurfaceKind::Ground, edge_hit, floor_y };
+        return SurfaceContext { kind: SurfaceKind::Ground, edge_hit, floor_y, ceiling_y };
     }
 
-    // Not resting on the floor yet — if this tick's fall would reach or pass it, report the
-    // BOTTOM edge now so the caller's border transition (e.g. fall -> bounce) fires on landing,
-    // rather than the mascot falling straight through and off the bottom of the world.
+    if on_ceiling {
+        if let Some(w) = hosting_ceiling {
+            let mut edge_hit = None;
+            if dx < 0 && mascot_x + dx <= w.left {
+                edge_hit = Some(Edge::Left);
+            } else if dx > 0 && mascot_x + mascot_width + dx >= w.right {
+                edge_hit = Some(Edge::Right);
+            }
+            return SurfaceContext { kind: SurfaceKind::Ceiling, edge_hit, floor_y, ceiling_y };
+        }
+
+        // Hanging from a monitor's own top edge, not a window: same seam logic as the ground
+        // case — only a genuine height mismatch between neighboring monitors' ceilings reads as
+        // an edge, not merely crossing into the next monitor's x-range.
+        let mut edge_hit = None;
+        if dx < 0 {
+            let leading_x = mascot_x + dx;
+            let continues = matches!(ceiling_at(leading_x, monitors), Some(h) if (h - ceiling_y).abs() <= GROUND_TOLERANCE);
+            if !continues {
+                edge_hit = Some(Edge::Left);
+            }
+        } else if dx > 0 {
+            let leading_x = mascot_x + mascot_width + dx;
+            let continues = matches!(ceiling_at(leading_x, monitors), Some(h) if (h - ceiling_y).abs() <= GROUND_TOLERANCE);
+            if !continues {
+                edge_hit = Some(Edge::Right);
+            }
+        }
+        return SurfaceContext { kind: SurfaceKind::Ceiling, edge_hit, floor_y, ceiling_y };
+    }
+
+    // Not resting on either surface yet — if this tick's movement would reach or pass one,
+    // report the edge now so the caller's border transition (e.g. fall -> bounce, or
+    // climb -> hang) fires on contact, rather than the mascot passing straight through and off
+    // the edge of the world (previously true of BOTTOM; climbing up with nothing to stop it at
+    // the top had exactly the same bug, just unnoticed since nothing fell through it visibly —
+    // a mascot climbing a wall just drifted off into empty space above the screen instead).
     if dy > 0 && feet_y + dy >= floor_y {
-        return SurfaceContext { kind: SurfaceKind::Air, edge_hit: Some(Edge::Bottom), floor_y };
+        return SurfaceContext { kind: SurfaceKind::Air, edge_hit: Some(Edge::Bottom), floor_y, ceiling_y };
+    }
+    if dy < 0 && head_y + dy <= ceiling_y {
+        return SurfaceContext { kind: SurfaceKind::Air, edge_hit: Some(Edge::Top), floor_y, ceiling_y };
     }
 
-    SurfaceContext { kind: SurfaceKind::Air, edge_hit: None, floor_y }
+    SurfaceContext { kind: SurfaceKind::Air, edge_hit: None, floor_y, ceiling_y }
 }
 
 #[cfg(test)]
@@ -219,5 +279,101 @@ mod tests {
         let monitors = [left_monitor, right_monitor];
         let ctx = query_surface(1920 - 64, 1080 - 64, 64, 64, 2, 0, &left_monitor, &monitors, &[]);
         assert_eq!(ctx.edge_hit, None, "same-height neighboring monitors must stay walkable across the seam");
+    }
+
+    // Regression tests for a real bug: query_surface never resolved a ceiling at all — a mascot
+    // climbing a wall (dy < 0) had nothing to stop it at the top, so it just drifted straight
+    // through the top of the screen into empty space above the monitor forever, instead of
+    // reaching climb_left/climb_right's own TOP border transition into climb_ceiling_*.
+
+    #[test]
+    fn climbing_past_the_screen_ceiling_this_tick_reports_top_edge() {
+        // head at y=5, climbing by -8 would put the head at -3 — past the ceiling at 0.
+        let ctx = query_surface(500, 5, 64, 64, 0, -8, &SCREEN, &MONITORS, &[]);
+        assert_eq!(ctx.edge_hit, Some(Edge::Top));
+    }
+
+    #[test]
+    fn a_mascot_resting_at_the_ceiling_is_not_reported_as_still_airborne() {
+        let ctx = query_surface(500, 0, 64, 64, 0, 0, &SCREEN, &MONITORS, &[]);
+        assert_eq!(ctx.kind, SurfaceKind::Ceiling, "head at the screen's own ceiling (0) must read as hanging, not airborne");
+    }
+
+    #[test]
+    fn climbing_mascot_repeatedly_stepped_eventually_reaches_the_ceiling_instead_of_climbing_forever() {
+        let mut y = 500;
+        let mut hit_top = false;
+        for _ in 0..200 {
+            let ctx = query_surface(500, y, 64, 64, 0, -8, &SCREEN, &MONITORS, &[]);
+            if ctx.edge_hit == Some(Edge::Top) {
+                hit_top = true;
+                break;
+            }
+            y -= 8;
+            assert!(y > SCREEN.top - 100, "mascot climbed past the ceiling without ever hitting TOP edge");
+        }
+        assert!(hit_top, "mascot never reported reaching the ceiling while climbing");
+    }
+
+    #[test]
+    fn hanging_from_a_window_uses_that_windows_underside_as_ceiling() {
+        // A window from y=200 to y=700 sitting above the mascot: its underside (700) is the
+        // ceiling, not the screen's own top (0).
+        let shelf = Rect { left: 200, top: 200, right: 900, bottom: 700 };
+        let ctx = query_surface(500, 700, 64, 64, 0, 0, &SCREEN, &MONITORS, &[shelf]);
+        assert_eq!(ctx.kind, SurfaceKind::Ceiling);
+        assert_eq!(ctx.ceiling_y, 700);
+    }
+
+    #[test]
+    fn walking_off_the_left_edge_of_a_hosting_ceiling_window() {
+        let shelf = Rect { left: 200, top: 200, right: 900, bottom: 700 };
+        let ctx = query_surface(200, 700, 64, 64, -2, 0, &SCREEN, &MONITORS, &[shelf]);
+        assert_eq!(ctx.edge_hit, Some(Edge::Left));
+    }
+
+    #[test]
+    fn a_window_the_mascot_has_already_climbed_past_does_not_reappear_as_a_ceiling() {
+        // Mirrors the equivalent floor regression: a window whose bottom is well below where the
+        // mascot's head already is must not register as still-ahead ceiling.
+        let already_passed = Rect { left: 0, top: 750, right: 1920, bottom: 800 };
+        // mascot head at 500 — above (climbed past) the window's bottom (800).
+        let ctx = query_surface(500, 500, 64, 64, 0, -8, &SCREEN, &MONITORS, &[already_passed]);
+        assert_eq!(ctx.edge_hit, None, "a window already climbed past must not be treated as the ceiling");
+    }
+
+    #[test]
+    fn climbing_over_the_shorter_monitor_hits_its_own_ceiling_not_the_taller_neighbors() {
+        // Reuses the mismatched horizontal/vertical monitor pair from the floor regression
+        // tests above, but this time both monitors are top-aligned (top: 0) — so this test
+        // instead checks a monitor pair whose TOPS mismatch (deliberately offset), the ceiling
+        // analogue of the earlier floor-height mismatch.
+        let low_top_monitor = Rect { left: 0, top: 200, right: 1920, bottom: 1080 };
+        let high_top_monitor = Rect { left: 1920, top: 0, right: 3000, bottom: 1080 };
+        let monitors = [low_top_monitor, high_top_monitor];
+        // head at y=205, climbing by -8 would reach 197 — past this monitor's own ceiling (200).
+        let ctx = query_surface(500, 205, 64, 64, 0, -8, &low_top_monitor, &monitors, &[]);
+        assert_eq!(ctx.edge_hit, Some(Edge::Top), "must hit its own monitor's ceiling (200), not fall through toward the neighbor's (0)");
+    }
+
+    #[test]
+    fn climbing_toward_a_monitor_with_a_different_ceiling_height_hits_an_edge() {
+        let low_top_monitor = Rect { left: 0, top: 200, right: 1920, bottom: 1080 };
+        let high_top_monitor = Rect { left: 1920, top: 0, right: 3000, bottom: 1080 };
+        let monitors = [low_top_monitor, high_top_monitor];
+        // Hanging at the right edge of low_top_monitor's ceiling (200), about to step onto
+        // high_top_monitor's x-range, whose ceiling (0) is 200px higher — not a walkable
+        // continuation.
+        let ctx = query_surface(1920 - 64, 200, 64, 64, 2, 0, &low_top_monitor, &monitors, &[]);
+        assert_eq!(ctx.edge_hit, Some(Edge::Right), "a ceiling-height mismatch between neighboring monitors must read as an edge");
+    }
+
+    #[test]
+    fn hanging_between_two_same_height_ceilings_stays_seamless() {
+        let left_monitor = Rect { left: 0, top: 0, right: 1920, bottom: 1080 };
+        let right_monitor = Rect { left: 1920, top: 0, right: 3840, bottom: 1080 };
+        let monitors = [left_monitor, right_monitor];
+        let ctx = query_surface(1920 - 64, 0, 64, 64, 2, 0, &left_monitor, &monitors, &[]);
+        assert_eq!(ctx.edge_hit, None, "same-height neighboring ceilings must stay walkable across the seam");
     }
 }

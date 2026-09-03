@@ -23,6 +23,10 @@ pub struct SurfaceContext {
     /// exactly on it. Callers that need to land exactly on the floor (see `app::step_one_mascot`)
     /// snap to this value instead of trusting the animation's own dy to get there.
     pub floor_y: i32,
+    /// The y coordinate of the ceiling this query resolved (the underside of whichever window
+    /// is above the mascot, or the top of whichever monitor is), symmetric to `floor_y` for a
+    /// mascot climbing up a wall toward `Edge::Top`.
+    pub ceiling_y: i32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -390,7 +394,7 @@ mod tests {
     }
 
     fn no_edge() -> SurfaceContext {
-        SurfaceContext { kind: SurfaceKind::Ground, edge_hit: None, floor_y: 0 }
+        SurfaceContext { kind: SurfaceKind::Ground, edge_hit: None, floor_y: 0, ceiling_y: 0 }
     }
 
     #[test]
@@ -477,7 +481,7 @@ mod tests {
         sm.force_animation("walk_left");
         let mut rng = StdRng::seed_from_u64(3);
 
-        let hit_left = SurfaceContext { kind: SurfaceKind::Ground, edge_hit: Some(crate::format::animation::Edge::Left), floor_y: 0 };
+        let hit_left = SurfaceContext { kind: SurfaceKind::Ground, edge_hit: Some(crate::format::animation::Edge::Left), floor_y: 0, ceiling_y: 0 };
         sm.step(hit_left, 4, &mut rng);
         assert!(sm.current_key() == "climb_left" || sm.current_key() == "walk_right");
     }
@@ -501,7 +505,7 @@ mod tests {
         sm.force_animation("fling");
         let mut rng = StdRng::seed_from_u64(1);
 
-        let left_edge = SurfaceContext { kind: SurfaceKind::Wall, edge_hit: Some(crate::format::animation::Edge::Left), floor_y: 0 };
+        let left_edge = SurfaceContext { kind: SurfaceKind::Wall, edge_hit: Some(crate::format::animation::Edge::Left), floor_y: 0, ceiling_y: 0 };
         let changed = sm.apply_event(EngineEventKind::FlingEnd, left_edge, 4, &mut rng);
         assert!(changed);
         assert_eq!(sm.current_key(), "climb_left");

@@ -187,6 +187,7 @@ fn step_one_mascot(mascot: &mut MascotInstance, screen: &Rect, monitors: &[Rect]
         windows,
     );
     let landed_this_tick = surface.edge_hit == Some(Edge::Bottom);
+    let hit_ceiling_this_tick = surface.edge_hit == Some(Edge::Top);
     let out = sm.step(surface, mascot.level, &mut mascot.rng);
 
     let mut dx = out.dx;
@@ -209,6 +210,11 @@ fn step_one_mascot(mascot: &mut MascotInstance, screen: &Rect, monitors: &[Rect]
         // screen edge undetected. Snap to the exact floor instead of trusting the animation's
         // own dy (now discarded in favor of this) to land there.
         mascot.y = surface.floor_y - SPRITE_SIZE;
+    } else if hit_ceiling_this_tick {
+        // Symmetric to the floor snap above: a mascot climbing up would otherwise stop a few
+        // pixels short of surface.ceiling_y, permanently reading as still airborne and never
+        // reaching the ceiling-hang animation's own on-ceiling edge detection.
+        mascot.y = surface.ceiling_y;
     } else {
         mascot.y += dy;
     }
