@@ -17,6 +17,12 @@ Double-click `shimeji.exe`, or `cargo run --release`. Use the system tray icon
 to import a mascot (drag a `.zip` onto the tray icon, or use "Import
 Mascot...") and spawn it.
 
+**First run:** Windows hides new tray icons in the "Show hidden icons" `^`
+overflow area next to the clock by default. If right-clicking where you'd
+expect the icon does nothing, click the `^` chevron first — the icon (and
+its menu) is in there. Drag it out onto the visible taskbar, or set it to
+always show, from that same flyout to keep it visible next time.
+
 ## Test
 
     cargo test
