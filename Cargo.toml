@@ -3,6 +3,10 @@ name = "shimeji"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "shimeji"
+path = "src/lib.rs"
+
 [dependencies]
 anyhow = "1.0.104"
 image = { version = "0.25.10", default-features = false, features = ["webp", "png"] }
