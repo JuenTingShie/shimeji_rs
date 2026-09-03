@@ -102,6 +102,11 @@ impl App {
         self.next_instance_id += 1;
         let level = bundle.manifest.levels;
         let window = MascotWindow::create(&frame, 100, 100, self.owner, id)?;
+        // Each mascot's own window is itself visible and titled ("Shimeji"), so without this it
+        // shows up in the environment's own "other windows on the desktop" list -- meaning with a
+        // second mascot spawned, either could be treated as real floor/ceiling geometry for the
+        // other, or a mascot could even land on its own window rect.
+        self.environment.window_source.exclude.push(window.hwnd);
 
         self.mascots.push(MascotInstance {
             id,
@@ -122,6 +127,7 @@ impl App {
     pub fn close(&mut self, instance_id: u32) {
         if let Some(pos) = self.mascots.iter().position(|m| m.id == instance_id) {
             let mascot = self.mascots.remove(pos);
+            self.environment.window_source.exclude.retain(|h| *h != mascot.window.hwnd);
             unsafe {
                 let _ = DestroyWindow(mascot.window.hwnd);
             }
@@ -129,6 +135,7 @@ impl App {
     }
 
     pub fn close_all(&mut self) {
+        self.environment.window_source.exclude.clear();
         for mascot in self.mascots.drain(..) {
             unsafe {
                 let _ = DestroyWindow(mascot.window.hwnd);
