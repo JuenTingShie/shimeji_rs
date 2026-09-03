@@ -89,7 +89,7 @@ fn main() -> windows::core::Result<()> {
                         break;
                     }
                     WM_TIMER => app.tick(Instant::now()),
-                    WM_MASCOT_TAP => app.handle_engine_event(msg.wParam.0 as u32, shimeji::format::animation::EngineEventKind::DragEnd, None),
+                    WM_MASCOT_TAP => app.handle_engine_event(msg.wParam.0 as u32, shimeji::format::animation::EngineEventKind::Tap, None),
                     WM_MASCOT_DRAG_START => app.handle_engine_event(msg.wParam.0 as u32, shimeji::format::animation::EngineEventKind::DragStart, None),
                     WM_MASCOT_FLING => {
                         let packed = msg.lParam.0 as u32;

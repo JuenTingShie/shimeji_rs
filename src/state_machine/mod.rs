@@ -1,6 +1,6 @@
 pub mod weighted;
 
-use crate::format::animation::{Animation, AnimationSchema, Direction, Edge};
+use crate::format::animation::{Animation, AnimationSchema, Direction, Edge, SurfaceType};
 use rand::RngExt;
 use std::collections::HashMap;
 
@@ -192,6 +192,28 @@ impl<'a> StateMachine<'a> {
         self.facing
     }
 
+    /// The "resting surface" edge the legacy schema's JUMP rules key off of via `when` — BOTTOM
+    /// for standing on the ground, TOP for hanging from a ceiling, LEFT/RIGHT for climbing a
+    /// wall on that side (inferred from the current WALL animation's own facing, since
+    /// `climb_left` is always LEFT-facing and `climb_right` always RIGHT-facing — no separate
+    /// geometry check needed). This answers a persistent "what am I on" question, unlike every
+    /// other use of `edge_hit` (including this same schema's FLING_END rules), which answers
+    /// "did I just cross an edge this tick". A mascot standing calmly has `edge_hit: None` from
+    /// a live `query_surface` call, which would otherwise always fall through JUMP's rules to
+    /// the schema's generic `to: fall` catch-all instead of a directional jump.
+    pub fn resting_edge(&self) -> Option<Edge> {
+        match self.current.kind {
+            SurfaceType::Ground => Some(Edge::Bottom),
+            SurfaceType::Ceiling => Some(Edge::Top),
+            SurfaceType::Wall => match self.facing {
+                Direction::Left => Some(Edge::Left),
+                Direction::Right => Some(Edge::Right),
+                Direction::Any => None,
+            },
+            SurfaceType::Air | SurfaceType::User => None,
+        }
+    }
+
     fn enter_animation<R: RngExt>(&mut self, key: &str, facing: Direction, rng: &mut R) {
         self.current = self.by_key.get(key).expect("caller guarantees key exists");
         self.frame_index = 0;
@@ -313,7 +335,7 @@ impl<'a> StateMachine<'a> {
         StepOutput { sprite_index: frame.sprite, dx: frame.dx, dy: frame.dy, changed_animation }
     }
 
-    pub fn current_kind(&self) -> crate::format::animation::SurfaceType {
+    pub fn current_kind(&self) -> SurfaceType {
         self.current.kind
     }
 
@@ -395,6 +417,23 @@ mod tests {
 
     fn no_edge() -> SurfaceContext {
         SurfaceContext { kind: SurfaceKind::Ground, edge_hit: None, floor_y: 0, ceiling_y: 0 }
+    }
+
+    /// A snapshot on `key` with an explicit `facing`, bypassing `StateMachine::new`'s randomly
+    /// resolved initial facing (unseedable by design — see `fresh_rng`'s doc comment) and
+    /// `force_animation`'s carry-forward of whatever facing was already set. Needed for tests
+    /// that depend on a specific facing, like a WALL animation's climbing side.
+    fn snapshot_at(schema: &AnimationSchema, key: &str, facing: Direction) -> StateMachineSnapshot {
+        let anim = schema.animations.iter().find(|a| a.key == key).expect("test fixture must define this animation");
+        StateMachineSnapshot {
+            current_key: key.to_string(),
+            frame_index: 0,
+            frame_ticks_remaining: anim.frames[0].duration_ticks,
+            ticks_in_animation: 0,
+            facing,
+            timer_targets: Vec::new(),
+            max_duration_target: None,
+        }
     }
 
     #[test]
@@ -533,6 +572,88 @@ mod tests {
 
         let changed = sm.apply_event(EngineEventKind::Tap, no_edge(), 4, &mut rng);
         assert!(changed);
+    }
+
+    // Regression tests for a real bug: the schema's JUMP rules key `when` off which surface
+    // the mascot is currently resting on (BOTTOM/TOP/LEFT/RIGHT = ground/ceiling/wall), not an
+    // edge crossed this tick like every other rule that reads `edge_hit`. Right-clicking "Jump"
+    // fires at an arbitrary moment while calmly resting (a live geometry query's edge_hit is
+    // None then), so without resting_edge every JUMP fell through to the schema's generic
+    // `to: fall` catch-all instead of a directional jump.
+
+    #[test]
+    fn resting_edge_on_ground_is_bottom() {
+        let schema = schema();
+        let mut sm = StateMachine::new(&schema);
+        sm.force_animation("walk_left");
+        assert_eq!(sm.resting_edge(), Some(crate::format::animation::Edge::Bottom));
+    }
+
+    #[test]
+    fn resting_edge_on_ceiling_is_top() {
+        let schema = schema();
+        let mut sm = StateMachine::new(&schema);
+        sm.force_animation("climb_ceiling_left");
+        assert_eq!(sm.resting_edge(), Some(crate::format::animation::Edge::Top));
+    }
+
+    #[test]
+    fn resting_edge_climbing_a_left_facing_wall_is_left() {
+        let schema = schema();
+        let sm = StateMachine::from_snapshot(&schema, &snapshot_at(&schema, "climb_left", Direction::Left));
+        assert_eq!(sm.resting_edge(), Some(crate::format::animation::Edge::Left));
+    }
+
+    #[test]
+    fn resting_edge_climbing_a_right_facing_wall_is_right() {
+        let schema = schema();
+        let sm = StateMachine::from_snapshot(&schema, &snapshot_at(&schema, "climb_right", Direction::Right));
+        assert_eq!(sm.resting_edge(), Some(crate::format::animation::Edge::Right));
+    }
+
+    #[test]
+    fn resting_edge_while_airborne_is_none_so_jump_falls_through_to_fall() {
+        let schema = schema();
+        let mut sm = StateMachine::new(&schema);
+        sm.force_animation("fall");
+        assert_eq!(sm.resting_edge(), None);
+    }
+
+    #[test]
+    fn jump_while_standing_on_the_ground_facing_left_jumps_up_left() {
+        let schema = schema();
+        let mut sm = StateMachine::from_snapshot(&schema, &snapshot_at(&schema, "walk_left", Direction::Left));
+        let mut rng = StdRng::seed_from_u64(1);
+
+        let resting = SurfaceContext { kind: SurfaceKind::Ground, edge_hit: sm.resting_edge(), floor_y: 0, ceiling_y: 0 };
+        let changed = sm.apply_event(EngineEventKind::Jump, resting, 4, &mut rng);
+        assert!(changed);
+        assert_eq!(sm.current_key(), "jump_up_left", "a live query's edge_hit: None here would instead fall through to 'fall'");
+    }
+
+    #[test]
+    fn jump_while_climbing_a_left_facing_wall_jumps_off_to_the_right() {
+        let schema = schema();
+        let mut sm = StateMachine::from_snapshot(&schema, &snapshot_at(&schema, "climb_left", Direction::Left));
+        let mut rng = StdRng::seed_from_u64(1);
+
+        let resting = SurfaceContext { kind: SurfaceKind::Wall, edge_hit: sm.resting_edge(), floor_y: 0, ceiling_y: 0 };
+        let changed = sm.apply_event(EngineEventKind::Jump, resting, 4, &mut rng);
+        assert!(changed);
+        assert_eq!(sm.current_key(), "jump_right");
+    }
+
+    #[test]
+    fn jump_while_airborne_falls_through_to_the_generic_fall_rule() {
+        let schema = schema();
+        let mut sm = StateMachine::new(&schema);
+        sm.force_animation("fall");
+        let mut rng = StdRng::seed_from_u64(1);
+
+        let resting = SurfaceContext { kind: SurfaceKind::Air, edge_hit: sm.resting_edge(), floor_y: 0, ceiling_y: 0 };
+        let changed = sm.apply_event(EngineEventKind::Jump, resting, 4, &mut rng);
+        assert!(changed);
+        assert_eq!(sm.current_key(), "fall");
     }
 
     // Regression tests for the snapshot/resume mechanism: a real caller (the app's per-tick loop)

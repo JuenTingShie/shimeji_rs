@@ -139,7 +139,14 @@ impl App {
 
         let mut sm = StateMachine::from_snapshot(&mascot.bundle.animation, &mascot.sm_state);
         let (pending_dx, pending_dy) = sm.pending_movement();
-        let surface = query_surface(mascot.x, mascot.y, SPRITE_SIZE, SPRITE_SIZE, pending_dx, pending_dy, &screen, &monitors, &windows);
+        let mut surface = query_surface(mascot.x, mascot.y, SPRITE_SIZE, SPRITE_SIZE, pending_dx, pending_dy, &screen, &monitors, &windows);
+        if event == EngineEventKind::Jump {
+            // JUMP's schema rules key `when` off which surface the mascot is currently resting
+            // on (ground/ceiling/wall), not an edge crossed this exact tick like every other
+            // event genuinely wants from the live geometry query above -- see
+            // StateMachine::resting_edge's doc comment.
+            surface.edge_hit = sm.resting_edge();
+        }
         if sm.apply_event(event, surface, mascot.level, &mut mascot.rng) {
             mascot.sm_state = sm.snapshot();
             mascot.ticks_since_interaction = 0;
