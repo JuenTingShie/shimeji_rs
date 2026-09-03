@@ -1,1 +1,8 @@
 /target
+
+# Licensed sample mascot bundle (not ours to redistribute) — kept on disk for
+# local build/test only, never tracked in git.
+/tests/fixtures/8ge8jqm7.zip
+/tests/fixtures/sample_manifest.json
+/tests/fixtures/sample_animation.json
+/tests/fixtures/sample_bundle/
