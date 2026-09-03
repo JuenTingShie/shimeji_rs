@@ -10,7 +10,7 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, GetCursorPos,
+    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, GetCursorPos,
     GetWindowLongPtrW, PostMessageW, RegisterClassW, SetForegroundWindow,
     SetWindowLongPtrW, SetWindowPos, TrackPopupMenu, UpdateLayeredWindow,
     GWLP_USERDATA, HTCLIENT, HTTRANSPARENT, MF_STRING, TPM_RETURNCMD, TPM_RIGHTBUTTON,
@@ -100,7 +100,11 @@ unsafe extern "system" fn mascot_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
             let _ = GetCursorPos(&mut cursor);
             let _ = SetForegroundWindow(hwnd);
             let choice = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD, cursor.x, cursor.y, Some(0), hwnd, None);
-            // See main.rs's show_tray_menu for why this trailing WM_NULL is required.
+            // See main.rs's show_tray_menu for both of these: TrackPopupMenu doesn't free the
+            // HMENU (leaking one per right-click eventually exhausts the process's USER handle
+            // quota and makes CreatePopupMenu itself start failing), and the trailing WM_NULL is
+            // required for the owner to keep accepting clicks on a later menu.
+            let _ = DestroyMenu(menu);
             let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
             if choice.0 == 1 {
                 let _ = PostMessageW(Some(state.owner), WM_MASCOT_JUMP, WPARAM(state.instance_id as usize), LPARAM(0));

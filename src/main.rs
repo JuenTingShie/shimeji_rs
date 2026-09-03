@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::UI::Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetCursorPos,
+    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW, GetCursorPos,
     PeekMessageW, PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow, SetTimer,
     TrackPopupMenu, TranslateMessage, MF_STRING, MSG, PM_REMOVE, TPM_RETURNCMD, TPM_RIGHTBUTTON,
     WM_DESTROY, WM_DROPFILES, WM_NULL, WM_QUIT, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
@@ -169,6 +169,11 @@ unsafe fn show_tray_menu(owner: HWND, app: &mut App) {
     let _ = GetCursorPos(&mut cursor);
     let _ = SetForegroundWindow(owner);
     let choice = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD, cursor.x, cursor.y, Some(0), owner, None).0 as u16;
+    // CreatePopupMenu's HMENU is a USER object the process owns until explicitly destroyed --
+    // TrackPopupMenu does not free it. Windows caps USER handles per process (~10,000 by
+    // default); leaking one per right-click eventually exhausts that quota and makes
+    // CreatePopupMenu itself start failing elsewhere in the app.
+    let _ = DestroyMenu(menu);
     // Required Win32 idiom for popup menus on an owner that isn't the shell's own foreground
     // window (our owner is an invisible WS_POPUP tool window): without this trailing WM_NULL,
     // the owner can be left in a state where a *later* TrackPopupMenu call renders the menu but
