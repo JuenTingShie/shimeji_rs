@@ -26,6 +26,7 @@ pub struct StepOutput {
     pub changed_animation: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
 struct TimerTarget {
     tick: u32,
     resolved: bool,
@@ -39,6 +40,32 @@ pub struct StateMachine<'a> {
     frame_ticks_remaining: u32,
     ticks_in_animation: u32,
     facing: Direction,
+    timer_targets: Vec<TimerTarget>,
+    max_duration_target: Option<u32>,
+}
+
+/// A `StateMachine<'a>` borrows the `AnimationSchema` it interprets, so it can't be stored
+/// alongside the schema it borrows from in a longer-lived owner (e.g. a per-mascot struct that
+/// also owns the schema) — that's a self-referential struct, which Rust can't express. This
+/// snapshot is the plain-data workaround: it captures everything `step`/`apply_event` need to
+/// resume exactly where they left off, so the owner can hold a `StateMachineSnapshot` between
+/// calls and rebuild a fresh `StateMachine` from it each time via `from_snapshot`.
+///
+/// Earlier code in this crate rebuilt a `StateMachine` each tick via `new()` + `force_animation()`
+/// instead of a real snapshot — `force_animation` (via `enter_animation`) unconditionally resets
+/// `frame_index`/`ticks_in_animation` to 0, so every tick replayed frame 0 of the current
+/// animation from scratch. For single-frame animations that's invisible, but it silently broke
+/// two real things: multi-frame animations (e.g. `walk_left`'s 4-frame cycle) never advanced past
+/// frame 0, and `onTimer`/`maxDurationTicks` transitions never fired because `ticks_in_animation`
+/// never exceeded 1. This was caught by watching a real spawned mascot fall forever off the
+/// bottom of the screen instead of landing.
+#[derive(Debug, Clone)]
+pub struct StateMachineSnapshot {
+    pub current_key: String,
+    frame_index: usize,
+    frame_ticks_remaining: u32,
+    ticks_in_animation: u32,
+    pub facing: Direction,
     timer_targets: Vec<TimerTarget>,
     max_duration_target: Option<u32>,
 }
@@ -60,6 +87,22 @@ impl<'a> StateMachine<'a> {
         let current = *by_key
             .get(schema.default_animation.as_str())
             .expect("bundle validation guarantees default_animation exists");
+        // The default animation's own `direction` can be ANY (e.g. "fall", which plays the same
+        // regardless of facing) — but facing must be a concrete LEFT/RIGHT for later
+        // facing-gated border transitions (like fall's BOTTOM -> bounce_left/bounce_right) to ever
+        // match, or a freshly spawned mascot on ANY facing would never land. Resolve ANY to a
+        // random concrete facing up front, the same way `resolve_facing` treats "RANDOM".
+        let mut rng = fresh_rng();
+        let facing = match current.direction {
+            Direction::Any => {
+                if rng.random_bool(0.5) {
+                    Direction::Left
+                } else {
+                    Direction::Right
+                }
+            }
+            concrete => concrete,
+        };
         let mut sm = StateMachine {
             schema,
             by_key,
@@ -67,16 +110,67 @@ impl<'a> StateMachine<'a> {
             frame_index: 0,
             frame_ticks_remaining: current.frames[0].duration_ticks,
             ticks_in_animation: 0,
-            facing: current.direction,
+            facing,
             timer_targets: Vec::new(),
             max_duration_target: None,
         };
-        sm.resolve_timers_for_current(&mut fresh_rng());
+        sm.resolve_timers_for_current(&mut rng);
         sm
     }
 
     pub fn force_animation(&mut self, key: &str) {
         self.enter_animation(key, self.facing, &mut fresh_rng());
+    }
+
+    /// Captures the mid-animation progress `from_snapshot` needs to resume exactly where this
+    /// `StateMachine` left off — the production alternative to `new()` + `force_animation()`,
+    /// which resets frame/tick progress and should only be used to set up a specific starting
+    /// animation in tests.
+    pub fn snapshot(&self) -> StateMachineSnapshot {
+        StateMachineSnapshot {
+            current_key: self.current.key.clone(),
+            frame_index: self.frame_index,
+            frame_ticks_remaining: self.frame_ticks_remaining,
+            ticks_in_animation: self.ticks_in_animation,
+            facing: self.facing,
+            timer_targets: self.timer_targets.clone(),
+            max_duration_target: self.max_duration_target,
+        }
+    }
+
+    /// Rebuilds a `StateMachine` resuming exactly where a prior instance's `snapshot()` left off
+    /// (frame position, tick counts, and already-resolved timer targets all preserved).
+    pub fn from_snapshot(schema: &'a AnimationSchema, snapshot: &StateMachineSnapshot) -> Self {
+        let by_key: HashMap<&str, &Animation> =
+            schema.animations.iter().map(|a| (a.key.as_str(), a)).collect();
+        let current = *by_key
+            .get(snapshot.current_key.as_str())
+            .expect("snapshot's current_key must reference a valid animation in this schema");
+        StateMachine {
+            schema,
+            by_key,
+            current,
+            frame_index: snapshot.frame_index,
+            frame_ticks_remaining: snapshot.frame_ticks_remaining,
+            ticks_in_animation: snapshot.ticks_in_animation,
+            facing: snapshot.facing,
+            timer_targets: snapshot.timer_targets.clone(),
+            max_duration_target: snapshot.max_duration_target,
+        }
+    }
+
+    /// The snapshot for a brand-new instance on `schema.default_animation` — what a freshly
+    /// spawned mascot starts from.
+    pub fn initial_snapshot(schema: &'a AnimationSchema) -> StateMachineSnapshot {
+        StateMachine::new(schema).snapshot()
+    }
+
+    /// The `dx`/`dy` the current frame will apply on the next `step()` call, needed by callers
+    /// that must know a mascot's pending movement before they can compute the `SurfaceContext`
+    /// `step()` itself requires (e.g. detecting that a fall is about to reach the floor this tick).
+    pub fn pending_movement(&self) -> (i32, i32) {
+        let frame = &self.current.frames[self.frame_index];
+        (frame.dx, frame.dy)
     }
 
     pub fn current_key(&self) -> &str {
@@ -300,6 +394,44 @@ mod tests {
     }
 
     #[test]
+    fn fresh_spawn_gets_a_concrete_facing_not_any() {
+        // Regression test for a real bug: "fall"'s own `direction` is ANY, and StateMachine::new
+        // used to copy it verbatim into `facing`. But fall's BOTTOM border transitions are gated
+        // on facing == LEFT or facing == RIGHT specifically — ANY matches neither, so a freshly
+        // spawned mascot could fall forever and never land. facing must resolve to a concrete
+        // direction on spawn, the same way "RANDOM" resolves elsewhere.
+        let schema = schema();
+        let sm = StateMachine::new(&schema);
+        assert!(sm.facing() == Direction::Left || sm.facing() == Direction::Right);
+    }
+
+    #[test]
+    fn a_freshly_spawned_mascot_falling_past_the_floor_actually_lands() {
+        // End-to-end regression test combining the facing fix above with the snapshot/resume
+        // cycle and query_surface's BOTTOM edge detection: a brand new mascot dropped from y=100
+        // must eventually leave "fall" once it reaches the floor, not fall forever.
+        let schema = schema();
+        let screen = crate::environment::Rect { left: 0, top: 0, right: 1920, bottom: 1080 };
+        let mut rng = StdRng::seed_from_u64(5);
+        let mut y = 100;
+        let mut snapshot = StateMachine::initial_snapshot(&schema);
+
+        for _ in 0..200 {
+            let mut sm = StateMachine::from_snapshot(&schema, &snapshot);
+            let (_, dy) = sm.pending_movement();
+            let surface = crate::environment::surface::query_surface(500, y, 64, 64, 0, dy, &screen, &[]);
+            let out = sm.step(surface, 4, &mut rng);
+            y += out.dy;
+            snapshot = sm.snapshot();
+            if snapshot.current_key != "fall" {
+                break;
+            }
+        }
+        assert_ne!(snapshot.current_key, "fall", "mascot never left the fall animation — it fell forever");
+        assert!(y < screen.bottom + 200, "mascot fell well past the floor without landing (y={y})");
+    }
+
+    #[test]
     fn oneshot_animation_advances_frames_by_duration_ticks() {
         let schema = schema();
         let mut sm = StateMachine::new(&schema);
@@ -389,5 +521,69 @@ mod tests {
 
         let changed = sm.apply_event(EngineEventKind::Tap, no_edge(), 4, &mut rng);
         assert!(changed);
+    }
+
+    // Regression tests for the snapshot/resume mechanism: a real caller (the app's per-tick loop)
+    // must rebuild a StateMachine from a schema it owns each tick (self-referential structs can't
+    // be stored directly), so snapshot()/from_snapshot() have to actually preserve progress across
+    // that rebuild — not just reset to frame 0 the way force_animation() does for tests.
+
+    #[test]
+    fn snapshot_and_resume_preserves_frame_progress_across_a_multi_frame_animation() {
+        let schema = schema();
+        let mut rng = StdRng::seed_from_u64(9);
+
+        // walk_left has 4 frames of 6 ticks each (sprites 33, 1, 34, 2). Simulate the real
+        // per-tick pattern: rebuild from the schema + last snapshot, step once, save the snapshot.
+        let mut snapshot = {
+            let mut sm = StateMachine::new(&schema);
+            sm.force_animation("walk_left");
+            sm.snapshot()
+        };
+
+        let mut sprites_seen = Vec::new();
+        for _ in 0..24 {
+            let mut sm = StateMachine::from_snapshot(&schema, &snapshot);
+            let out = sm.step(no_edge(), 4, &mut rng);
+            sprites_seen.push(out.sprite_index);
+            snapshot = sm.snapshot();
+        }
+
+        // All 4 frames' sprites must have actually appeared — proves frame_index advanced past 0
+        // across the rebuild-per-tick pattern instead of replaying frame 0 every time.
+        assert!(sprites_seen.contains(&33));
+        assert!(sprites_seen.contains(&1));
+        assert!(sprites_seen.contains(&34));
+        assert!(sprites_seen.contains(&2));
+    }
+
+    #[test]
+    fn pending_movement_reports_the_current_frames_dx_dy_before_stepping() {
+        let schema = schema();
+        let mut sm = StateMachine::new(&schema);
+        sm.force_animation("fall");
+        assert_eq!(sm.pending_movement(), (0, 15));
+    }
+
+    #[test]
+    fn resumed_state_machine_still_reaches_an_onfinish_transition() {
+        let schema = schema();
+        let mut rng = StdRng::seed_from_u64(11);
+
+        // bounce_left is ONESHOT, 8+8=16 ticks total, then onFinish fires. Drive it entirely
+        // through the snapshot/resume cycle, like a real per-tick caller would.
+        let mut snapshot = {
+            let mut sm = StateMachine::new(&schema);
+            sm.force_animation("bounce_left");
+            sm.snapshot()
+        };
+        let mut final_key = String::new();
+        for _ in 0..16 {
+            let mut sm = StateMachine::from_snapshot(&schema, &snapshot);
+            sm.step(no_edge(), 4, &mut rng);
+            snapshot = sm.snapshot();
+            final_key = snapshot.current_key.clone();
+        }
+        assert!(final_key == "walk_left" || final_key == "walk_right");
     }
 }
