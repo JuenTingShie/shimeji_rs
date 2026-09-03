@@ -10,8 +10,8 @@ use shimeji::tray::TrayIcon;
 use shimeji::window::mascot_window::MascotWindow;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
-use windows::Win32::Foundation::HWND;
-use windows::Win32::UI::WindowsAndMessaging::DestroyWindow;
+use windows::Win32::Foundation::{HWND, RECT};
+use windows::Win32::UI::WindowsAndMessaging::{DestroyWindow, GetWindowRect};
 use std::time::{Duration, Instant};
 
 const IDLE_THRESHOLD_TICKS: u32 = 3600;
@@ -35,6 +35,11 @@ pub struct MascotInstance {
     pub ticks_since_interaction: u32,
     pub fling_velocity: Option<(f64, f64)>,
     pub rng: StdRng,
+    // While the user is physically holding the mascot (WM_MOUSEMOVE repositions the OS window
+    // directly, bypassing x/y below), tick() must not also step physics/animation for it — doing
+    // both at once raced the cursor-driven position against a stale computed one every frame. See
+    // handle_engine_event's DragStart/Tap/FlingStart handling.
+    pub dragging: bool,
 }
 
 pub struct App {
@@ -109,6 +114,7 @@ impl App {
             ticks_since_interaction: 0,
             fling_velocity: None,
             rng: StdRng::seed_from_u64(rand::random()),
+            dragging: false,
         });
         Ok(())
     }
@@ -136,6 +142,21 @@ impl App {
         let monitors = monitors.to_vec();
         let windows = windows.to_vec();
         let Some(mascot) = self.mascots.iter_mut().find(|m| m.id == instance_id) else { return };
+
+        if event == EngineEventKind::DragStart {
+            mascot.dragging = true;
+        } else if mascot.dragging && matches!(event, EngineEventKind::Tap | EngineEventKind::FlingStart) {
+            // The mouse was just released (WM_LBUTTONUP always classifies into one of these two
+            // events). x/y haven't tracked the window's real position since DragStart -- pull it
+            // from the actual OS window before physics resumes, or the mascot would snap back to
+            // wherever it was picked up from on the very next tick.
+            mascot.dragging = false;
+            let mut rect = RECT::default();
+            if unsafe { GetWindowRect(mascot.window.hwnd, &mut rect) }.is_ok() {
+                mascot.x = rect.left;
+                mascot.y = rect.top;
+            }
+        }
 
         let mut sm = StateMachine::from_snapshot(&mascot.bundle.animation, &mascot.sm_state);
         let (pending_dx, pending_dy) = sm.pending_movement();
@@ -166,6 +187,9 @@ impl App {
         let windows = windows.to_vec();
 
         for mascot in &mut self.mascots {
+            if mascot.dragging {
+                continue;
+            }
             step_one_mascot(mascot, &screen, &monitors, &windows);
         }
     }
