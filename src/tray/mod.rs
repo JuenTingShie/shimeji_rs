@@ -40,6 +40,18 @@ impl Drop for TrayIcon {
 }
 
 impl TrayIcon {
+    /// Explorer re-broadcasts "TaskbarCreated" to every top-level window whenever it restarts
+    /// (crash, manual restart, some shell-extension installs) or the taskbar is otherwise
+    /// recreated. Any NIM_ADD registration from before that point is silently gone; the icon
+    /// only comes back if the app notices this broadcast and re-adds it.
+    pub fn readd(&self) {
+        unsafe {
+            let _ = Shell_NotifyIconW(NIM_ADD, &self.data);
+        }
+    }
+}
+
+impl TrayIcon {
     /// Shows a Windows balloon notification from the tray icon — used for both import failures
     /// ("this doesn't look like a mascot bundle: ...") and successes, per the spec's requirement
     /// that a rejected import explains why.

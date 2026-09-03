@@ -1,6 +1,7 @@
 #![windows_subsystem = "windows"]
 
 mod app;
+mod logging;
 
 use app::App;
 use shimeji::importer::catalog::CatalogEntry;
@@ -12,12 +13,13 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::UI::Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetCursorPos,
-    PeekMessageW, PostMessageW, PostQuitMessage, RegisterClassW, SetForegroundWindow, SetTimer,
+    PeekMessageW, PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow, SetTimer,
     TrackPopupMenu, TranslateMessage, MF_STRING, MSG, PM_REMOVE, TPM_RETURNCMD, TPM_RIGHTBUTTON,
-    WM_DESTROY, WM_DROPFILES, WM_QUIT, WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW,
-    WS_POPUP,
+    WM_DESTROY, WM_DROPFILES, WM_NULL, WM_QUIT, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
+    WS_EX_TOOLWINDOW, WS_POPUP,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
 use windows::core::w;
 
 const TICK_TIMER_ID: usize = 1;
@@ -38,12 +40,21 @@ unsafe extern "system" fn owner_window_proc(hwnd: HWND, msg: u32, wparam: WPARAM
 }
 
 fn main() -> windows::core::Result<()> {
-    let library_root = dirs_next::data_dir()
-        .expect("APPDATA must be resolvable on Windows")
-        .join("ShimejiRust")
-        .join("mascots");
+    let app_root = dirs_next::data_dir().expect("APPDATA must be resolvable on Windows").join("ShimejiRust");
+    let library_root = app_root.join("mascots");
+    logging::init(app_root.join("animations.log"));
 
     unsafe {
+        // Without an app manifest, Win32 processes default to DPI-unaware, which makes Windows
+        // silently virtualize (scale) screen coordinates for this process. On a mixed-DPI or
+        // mismatched-orientation multi-monitor setup, that virtualization is a well-known cause
+        // of exactly this class of bug: cursor position (GetCursorPos, used to place the tray
+        // context menu) and the OS's actual click hit-testing end up in different coordinate
+        // spaces, so a popup menu can be drawn right under the cursor while every click on it
+        // is silently swallowed. Declaring real per-monitor DPI awareness turns that
+        // virtualization off. Must happen before any window is created.
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
         let hinstance = GetModuleHandleW(None)?;
         let class_name = w!("ShimejiOwnerWindow");
         let wc = WNDCLASSW {
@@ -72,6 +83,11 @@ fn main() -> windows::core::Result<()> {
         let tray = TrayIcon::create(owner)?;
         let mut app = App::new(library_root, owner, tray);
         SetTimer(Some(owner), TICK_TIMER_ID, TICK_INTERVAL_MS, None);
+
+        // Explorer broadcasts this registered message to every top-level window when the
+        // taskbar is (re)created, e.g. after Explorer crashes and restarts — see
+        // TrayIcon::readd's doc comment.
+        let wm_taskbar_created = RegisterWindowMessageW(w!("TaskbarCreated"));
 
         let mut msg = MSG::default();
         let mut last_tick = Instant::now();
@@ -105,6 +121,7 @@ fn main() -> windows::core::Result<()> {
                         }
                     }
                     WM_DROPFILES => handle_drop(&mut app, HDROP(msg.wParam.0 as *mut _)),
+                    m if m == wm_taskbar_created => app.tray.readd(),
                     _ => {
                         let _ = TranslateMessage(&msg);
                         DispatchMessageW(&msg);
@@ -152,6 +169,12 @@ unsafe fn show_tray_menu(owner: HWND, app: &mut App) {
     let _ = GetCursorPos(&mut cursor);
     let _ = SetForegroundWindow(owner);
     let choice = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD, cursor.x, cursor.y, Some(0), owner, None).0 as u16;
+    // Required Win32 idiom for popup menus on an owner that isn't the shell's own foreground
+    // window (our owner is an invisible WS_POPUP tool window): without this trailing WM_NULL,
+    // the owner can be left in a state where a *later* TrackPopupMenu call renders the menu but
+    // silently swallows every click on it. See Raymond Chen / MSDN guidance on
+    // SetForegroundWindow + TrackPopupMenu + PostMessage(WM_NULL).
+    let _ = PostMessageW(Some(owner), WM_NULL, WPARAM(0), LPARAM(0));
 
     if choice == IMPORT_MENU_ID {
         if let Some(path) = rfd::FileDialog::new().add_filter("Mascot bundle", &["zip"]).pick_file() {

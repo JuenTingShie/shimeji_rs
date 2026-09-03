@@ -11,13 +11,13 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, GetCursorPos,
-    GetWindowLongPtrW, PostMessageW, RegisterClassW,
+    GetWindowLongPtrW, PostMessageW, RegisterClassW, SetForegroundWindow,
     SetWindowLongPtrW, SetWindowPos, TrackPopupMenu, UpdateLayeredWindow,
     GWLP_USERDATA, HTCLIENT, HTTRANSPARENT, MF_STRING, TPM_RETURNCMD, TPM_RIGHTBUTTON,
     HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, ULW_ALPHA,
-    WM_APP, WM_DESTROY, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCHITTEST, WM_RBUTTONUP,
-    WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
-    WS_VISIBLE,
+    WM_APP, WM_DESTROY, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCHITTEST, WM_NULL,
+    WM_RBUTTONUP, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_POPUP, WS_VISIBLE,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
 
@@ -98,7 +98,10 @@ unsafe extern "system" fn mascot_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
             let _ = AppendMenuW(menu, MF_STRING, 2, w!("Close"));
             let mut cursor = POINT::default();
             let _ = GetCursorPos(&mut cursor);
+            let _ = SetForegroundWindow(hwnd);
             let choice = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD, cursor.x, cursor.y, Some(0), hwnd, None);
+            // See main.rs's show_tray_menu for why this trailing WM_NULL is required.
+            let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
             if choice.0 == 1 {
                 let _ = PostMessageW(Some(state.owner), WM_MASCOT_JUMP, WPARAM(state.instance_id as usize), LPARAM(0));
             } else if choice.0 == 2 {
