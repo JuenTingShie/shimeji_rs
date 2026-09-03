@@ -12,7 +12,7 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::UI::Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetCursorPos,
-    PeekMessageW, PostQuitMessage, RegisterClassW, SetForegroundWindow, SetTimer,
+    PeekMessageW, PostMessageW, PostQuitMessage, RegisterClassW, SetForegroundWindow, SetTimer,
     TrackPopupMenu, TranslateMessage, MF_STRING, MSG, PM_REMOVE, TPM_RETURNCMD, TPM_RIGHTBUTTON,
     WM_DESTROY, WM_DROPFILES, WM_QUIT, WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW,
     WS_POPUP,
@@ -23,7 +23,17 @@ use windows::core::w;
 const TICK_TIMER_ID: usize = 1;
 const TICK_INTERVAL_MS: u32 = 1000 / 60;
 
+// Explorer delivers the Shell_NotifyIcon callback (and, on some builds, WM_DROPFILES) via
+// SendMessage rather than PostMessage. A SendMessage from another process is dispatched
+// straight into this WndProc as a side effect of the receiving thread pumping messages
+// (PeekMessageW/GetMessageW) — it never becomes a MSG the main loop's PeekMessageW call
+// returns, so the loop's `match msg.message` never sees it. Re-post it so the existing
+// queue-based handling in main()'s loop still runs it exactly once.
 unsafe extern "system" fn owner_window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if msg == WM_TRAY_CALLBACK || msg == WM_DROPFILES {
+        let _ = unsafe { PostMessageW(Some(hwnd), msg, wparam, lparam) };
+        return LRESULT(0);
+    }
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }
 
