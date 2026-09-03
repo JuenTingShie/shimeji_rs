@@ -207,6 +207,65 @@ impl<'a> StateMachine<'a> {
         let frame = &self.current.frames[self.frame_index];
         StepOutput { sprite_index: frame.sprite, dx: frame.dx, dy: frame.dy, changed_animation }
     }
+
+    pub fn current_kind(&self) -> crate::format::animation::SurfaceType {
+        self.current.kind
+    }
+
+    pub fn apply_event<R: RngExt>(
+        &mut self,
+        event: crate::format::animation::EngineEventKind,
+        surface: SurfaceContext,
+        level: u8,
+        rng: &mut R,
+    ) -> bool {
+        for rule in &self.schema.events {
+            if rule.event != event {
+                continue;
+            }
+            let from_matches = match &rule.from {
+                Some(f) if f == "*" => true,
+                Some(f) => f == self.current.key.as_str(),
+                None => {
+                    let level_ok = rule.min_level.map_or(true, |m| level >= m)
+                        && rule.max_level.map_or(true, |m| level <= m);
+                    let type_ok = rule
+                        .allowed_types
+                        .as_ref()
+                        .map_or(true, |types| types.contains(&self.current.kind));
+                    level_ok && type_ok
+                }
+            };
+            if !from_matches {
+                continue;
+            }
+            if let Some(when) = rule.when {
+                if surface.edge_hit != Some(when) {
+                    continue;
+                }
+            }
+            if let Some(facing) = rule.facing {
+                if facing != self.facing {
+                    continue;
+                }
+            }
+
+            if let Some(choices) = &rule.choices {
+                if let Some(choice) = weighted::pick_weighted(choices, level, rng) {
+                    let facing = resolve_facing(choice.set_facing.as_deref(), self.facing, rng);
+                    let to = choice.to.clone();
+                    self.enter_animation(&to, facing, rng);
+                    return true;
+                }
+            } else if let Some(to) = &rule.to {
+                let facing = resolve_facing(rule.set_facing.as_deref(), self.facing, rng);
+                let to = to.clone();
+                self.enter_animation(&to, facing, rng);
+                return true;
+            }
+        }
+        false
+    }
 }
 
 fn resolve_facing<R: RngExt>(set_facing: Option<&str>, current: Direction, rng: &mut R) -> Direction {
@@ -221,7 +280,7 @@ fn resolve_facing<R: RngExt>(set_facing: Option<&str>, current: Direction, rng: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::format::animation::AnimationSchema;
+    use crate::format::animation::{AnimationSchema, EngineEventKind, SurfaceType};
     use rand::prelude::*;
 
     fn schema() -> AnimationSchema {
@@ -281,5 +340,54 @@ mod tests {
         let hit_left = SurfaceContext { kind: SurfaceKind::Ground, edge_hit: Some(crate::format::animation::Edge::Left) };
         sm.step(hit_left, 4, &mut rng);
         assert!(sm.current_key() == "climb_left" || sm.current_key() == "walk_right");
+    }
+
+    #[test]
+    fn drag_start_switches_to_drag_from_any_animation() {
+        let schema = schema();
+        let mut sm = StateMachine::new(&schema);
+        sm.force_animation("walk_left");
+        let mut rng = StdRng::seed_from_u64(1);
+
+        let changed = sm.apply_event(EngineEventKind::DragStart, no_edge(), 4, &mut rng);
+        assert!(changed);
+        assert_eq!(sm.current_key(), "drag");
+    }
+
+    #[test]
+    fn fling_end_on_left_edge_climbs() {
+        let schema = schema();
+        let mut sm = StateMachine::new(&schema);
+        sm.force_animation("fling");
+        let mut rng = StdRng::seed_from_u64(1);
+
+        let left_edge = SurfaceContext { kind: SurfaceKind::Wall, edge_hit: Some(crate::format::animation::Edge::Left) };
+        let changed = sm.apply_event(EngineEventKind::FlingEnd, left_edge, 4, &mut rng);
+        assert!(changed);
+        assert_eq!(sm.current_key(), "climb_left");
+    }
+
+    #[test]
+    fn tap_at_level_one_has_no_matching_rule() {
+        let schema = schema();
+        let mut sm = StateMachine::new(&schema);
+        sm.force_animation("walk_left");
+        let mut rng = StdRng::seed_from_u64(1);
+
+        let changed = sm.apply_event(EngineEventKind::Tap, no_edge(), 1, &mut rng);
+        assert!(!changed);
+        assert_eq!(sm.current_key(), "walk_left");
+    }
+
+    #[test]
+    fn tap_at_level_four_on_ground_picks_a_response() {
+        let schema = schema();
+        let mut sm = StateMachine::new(&schema);
+        sm.force_animation("walk_left");
+        assert_eq!(sm.current_kind(), SurfaceType::Ground);
+        let mut rng = StdRng::seed_from_u64(1);
+
+        let changed = sm.apply_event(EngineEventKind::Tap, no_edge(), 4, &mut rng);
+        assert!(changed);
     }
 }
