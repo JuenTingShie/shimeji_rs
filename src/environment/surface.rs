@@ -159,6 +159,24 @@ pub fn query_surface(
         return SurfaceContext { kind: SurfaceKind::Air, edge_hit: Some(Edge::Top), floor_y, ceiling_y };
     }
 
+    // Same idea, horizontally: a purely (or diagonally) horizontal airborne animation -- e.g.
+    // this schema's jump_right, dx: 10 / dy: 0, looping forever with no timer and its only exit a
+    // RIGHT border transition into climb_right -- needs LEFT/RIGHT edges reported while airborne
+    // too, or that transition can never fire and the mascot just jumps straight off the edge of
+    // the screen forever instead of resuming the climb. Symmetric to floor_at/ceiling_at's use in
+    // the grounded seam checks above: off the edge means no monitor covers the leading x at all.
+    if dx < 0 {
+        let leading_x = mascot_x + dx;
+        if floor_at(leading_x, monitors).is_none() {
+            return SurfaceContext { kind: SurfaceKind::Air, edge_hit: Some(Edge::Left), floor_y, ceiling_y };
+        }
+    } else if dx > 0 {
+        let leading_x = mascot_x + mascot_width + dx;
+        if floor_at(leading_x, monitors).is_none() {
+            return SurfaceContext { kind: SurfaceKind::Air, edge_hit: Some(Edge::Right), floor_y, ceiling_y };
+        }
+    }
+
     SurfaceContext { kind: SurfaceKind::Air, edge_hit: None, floor_y, ceiling_y }
 }
 
@@ -227,6 +245,25 @@ mod tests {
         let ctx = query_surface(880, 700, 64, 64, 0, 0, &SCREEN, &MONITORS, &[shelf]);
         assert_eq!(ctx.kind, SurfaceKind::Ceiling);
         assert_eq!(ctx.ceiling_y, 700, "must still use the window's ceiling while any part of the mascot overlaps it");
+    }
+
+    #[test]
+    fn an_airborne_mascot_moving_purely_horizontally_off_the_left_edge_reports_left() {
+        // Regression test for a real bug: the "not resting on anything" branch only ever checked
+        // dy for TOP/BOTTOM, never dx for LEFT/RIGHT. An airborne animation that moves purely (or
+        // diagonally) sideways -- like this schema's jump_right/jump_left, whose only exit is
+        // their own LEFT/RIGHT border transition back into climbing -- could never trigger it and
+        // would just jump straight off the edge of the screen forever.
+        let ctx = query_surface(2, 400, 64, 64, -5, 0, &SCREEN, &MONITORS, &[]);
+        assert_eq!(ctx.kind, SurfaceKind::Air);
+        assert_eq!(ctx.edge_hit, Some(Edge::Left));
+    }
+
+    #[test]
+    fn an_airborne_mascot_moving_purely_horizontally_off_the_right_edge_reports_right() {
+        let ctx = query_surface(1920 - 64 - 2, 400, 64, 64, 5, 0, &SCREEN, &MONITORS, &[]);
+        assert_eq!(ctx.kind, SurfaceKind::Air);
+        assert_eq!(ctx.edge_hit, Some(Edge::Right));
     }
 
     #[test]
