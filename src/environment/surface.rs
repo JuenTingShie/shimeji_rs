@@ -35,6 +35,8 @@ pub fn query_surface(
 ) -> SurfaceContext {
     let feet_y = mascot_y + mascot_height;
     let head_y = mascot_y;
+    let mascot_left = mascot_x;
+    let mascot_right = mascot_x + mascot_width;
     let center_x = mascot_x + mascot_width / 2;
 
     // The floor directly under the mascot: the topmost window edge the mascot's FEET haven't
@@ -42,9 +44,17 @@ pub fn query_surface(
     // mascot's top and its feet has already been passed, not one still ahead to land on), else
     // the real monitor floor under this x, else (no monitor covers it — shouldn't normally
     // happen) the virtual-desktop bounding box as a last resort.
+    //
+    // "Under" means any horizontal overlap between the mascot's body and the window (an AABB
+    // overlap test), not merely the mascot's center point falling inside the window's span. A
+    // center-point test disagrees with the edge_hit check below (which uses the mascot's full
+    // width) as soon as the mascot's center has crossed a window's edge but part of its body
+    // still overlaps it: hosting_floor would drop out early, the floor would jump to whatever's
+    // under the monitor instead, and the mascot would appear to fall before it had actually
+    // walked off — well before edge_hit's own full-body definition of "walked off" ever fires.
     let hosting_floor = windows
         .iter()
-        .filter(|w| w.left <= center_x && center_x < w.right && w.top >= feet_y - GROUND_TOLERANCE)
+        .filter(|w| w.left < mascot_right && w.right > mascot_left && w.top >= feet_y - GROUND_TOLERANCE)
         .min_by_key(|w| w.top)
         .copied();
     let floor_y = hosting_floor
@@ -55,10 +65,11 @@ pub fn query_surface(
     // The ceiling directly above the mascot: symmetric to the floor lookup above — the lowest
     // window edge the mascot's HEAD hasn't already climbed past (a window between the mascot's
     // head and feet has already been passed, not one still ahead to bump into), else the real
-    // monitor ceiling above this x, else the bounding box as a last resort.
+    // monitor ceiling above this x, else the bounding box as a last resort. Same overlap test as
+    // the floor lookup, for the same reason.
     let hosting_ceiling = windows
         .iter()
-        .filter(|w| w.left <= center_x && center_x < w.right && w.bottom <= head_y + GROUND_TOLERANCE)
+        .filter(|w| w.left < mascot_right && w.right > mascot_left && w.bottom <= head_y + GROUND_TOLERANCE)
         .max_by_key(|w| w.bottom)
         .copied();
     let ceiling_y = hosting_ceiling
@@ -190,6 +201,32 @@ mod tests {
         let browser = Rect { left: 200, top: 400, right: 900, bottom: 900 };
         let ctx = query_surface(200, 400 - 64, 64, 64, -2, 0, &SCREEN, &MONITORS, &[browser]);
         assert_eq!(ctx.edge_hit, Some(Edge::Left));
+    }
+
+    #[test]
+    fn a_mascot_mostly_off_a_window_but_still_partially_overlapping_stays_hosted_by_it() {
+        // Regression test for a real bug: hosting_floor required the mascot's CENTER point to
+        // fall within the window's x-range, so a mascot whose center had already passed the
+        // window's right edge -- but whose body still partially overlapped it -- lost the window
+        // as its floor and fell back to the (much lower) monitor floor, well before edge_hit's
+        // own full-body definition of "walked off" fired. Any overlap must keep it hosted.
+        let browser = Rect { left: 200, top: 400, right: 900, bottom: 900 };
+        // mascot spans [880, 944) -- center (912) is past the window's right edge (900), but
+        // 20px of the mascot's body (880..900) still overlaps it.
+        let ctx = query_surface(880, 400 - 64, 64, 64, 0, 0, &SCREEN, &MONITORS, &[browser]);
+        assert_eq!(ctx.kind, SurfaceKind::Ground);
+        assert_eq!(ctx.floor_y, 400, "must still use the window's floor while any part of the mascot overlaps it");
+    }
+
+    #[test]
+    fn a_mascot_mostly_off_a_ceiling_window_but_still_partially_overlapping_stays_hosted_by_it() {
+        // Ceiling analogue of the floor regression above.
+        let shelf = Rect { left: 200, top: 200, right: 900, bottom: 700 };
+        // mascot spans [880, 944) -- center (912) is past the window's right edge (900), but
+        // 20px of the mascot's body (880..900) still overlaps it.
+        let ctx = query_surface(880, 700, 64, 64, 0, 0, &SCREEN, &MONITORS, &[shelf]);
+        assert_eq!(ctx.kind, SurfaceKind::Ceiling);
+        assert_eq!(ctx.ceiling_y, 700, "must still use the window's ceiling while any part of the mascot overlaps it");
     }
 
     #[test]
