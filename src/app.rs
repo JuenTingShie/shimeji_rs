@@ -8,6 +8,9 @@ use shimeji::importer::catalog::CatalogEntry;
 use shimeji::state_machine::{StateMachine, StateMachineSnapshot};
 use shimeji::tray::TrayIcon;
 use shimeji::window::mascot_window::MascotWindow;
+use shimeji::window::settings_window::SettingsWindow;
+use image::imageops::{resize, FilterType};
+use image::RgbaImage;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use windows::Win32::Foundation::{HWND, RECT};
@@ -18,6 +21,24 @@ const IDLE_THRESHOLD_TICKS: u32 = 3600;
 const SPRITE_SIZE: i32 = 512;
 const TICKS_PER_SECOND: f64 = 60.0;
 const FLING_GRAVITY_PER_TICK: f64 = 0.6;
+
+/// The physical sprite/collision size for this mascot at its current scale -- SPRITE_SIZE scaled
+/// by `mascot.scale`, used everywhere query_surface or a floor/ceiling snap needs the mascot's
+/// actual on-screen footprint instead of the bundle's native size.
+fn sprite_size(mascot: &MascotInstance) -> i32 {
+    (SPRITE_SIZE as f64 * mascot.scale).round() as i32
+}
+
+/// Resizes a decoded sprite frame to the mascot's current scale before it's handed to
+/// `MascotWindow` -- `UpdateLayeredWindow` resizes the actual OS window to match whatever frame
+/// it's given, so this is the only place scale needs to be applied for rendering.
+fn scaled_frame(frame: RgbaImage, scale: f64) -> RgbaImage {
+    if (scale - 1.0).abs() < f64::EPSILON {
+        return frame;
+    }
+    let size = ((SPRITE_SIZE as f64 * scale).round() as u32).max(1);
+    resize(&frame, size, size, FilterType::Lanczos3)
+}
 
 pub struct MascotInstance {
     pub id: u32,
@@ -40,6 +61,12 @@ pub struct MascotInstance {
     // both at once raced the cursor-driven position against a stale computed one every frame. See
     // handle_engine_event's DragStart/Tap/FlingStart handling.
     pub dragging: bool,
+    pub scale: f64,
+    pub speed: f64,
+    // Fractional ticks carried between calls to `tick()` so `speed` can run the state machine
+    // faster (multiple `step_one_mascot` calls in one real tick) or slower (skip some real ticks
+    // entirely) than the real 60Hz timer, without either behavior needing its own separate path.
+    pub tick_accumulator: f64,
 }
 
 pub struct App {
@@ -101,7 +128,7 @@ impl App {
         let id = self.next_instance_id;
         self.next_instance_id += 1;
         let level = bundle.manifest.levels;
-        let window = MascotWindow::create(&frame, 100, 100, self.owner, id)?;
+        let window = MascotWindow::create(&scaled_frame(frame, 1.0), 100, 100, self.owner, id)?;
         // Each mascot's own window is itself visible and titled ("Shimeji"), so without this it
         // shows up in the environment's own "other windows on the desktop" list -- meaning with a
         // second mascot spawned, either could be treated as real floor/ceiling geometry for the
@@ -120,8 +147,39 @@ impl App {
             fling_velocity: None,
             rng: StdRng::seed_from_u64(rand::random()),
             dragging: false,
+            scale: 1.0,
+            speed: 1.0,
+            tick_accumulator: 0.0,
         });
         Ok(())
+    }
+
+    pub fn open_settings(&mut self, instance_id: u32) {
+        let Some(mascot) = self.mascots.iter().find(|m| m.id == instance_id) else { return };
+        let scale_pct = (mascot.scale * 100.0).round() as i32;
+        let speed_pct = (mascot.speed * 100.0).round() as i32;
+        if let Ok(settings) = SettingsWindow::create(self.owner, instance_id, scale_pct, speed_pct) {
+            // A settings window is itself a real, visible, titled top-level window -- excluded
+            // from the desktop window list for the same reason mascot windows are (see spawn's
+            // comment above); removed again in settings_window_closed.
+            self.environment.window_source.exclude.push(settings.hwnd);
+        }
+    }
+
+    pub fn set_scale(&mut self, instance_id: u32, pct: i32) {
+        if let Some(mascot) = self.mascots.iter_mut().find(|m| m.id == instance_id) {
+            mascot.scale = pct as f64 / 100.0;
+        }
+    }
+
+    pub fn set_speed(&mut self, instance_id: u32, pct: i32) {
+        if let Some(mascot) = self.mascots.iter_mut().find(|m| m.id == instance_id) {
+            mascot.speed = pct as f64 / 100.0;
+        }
+    }
+
+    pub fn settings_window_closed(&mut self, hwnd_raw: usize) {
+        self.environment.window_source.exclude.retain(|h| h.0 as usize != hwnd_raw);
     }
 
     pub fn close(&mut self, instance_id: u32) {
@@ -165,9 +223,10 @@ impl App {
             }
         }
 
+        let size = sprite_size(mascot);
         let mut sm = StateMachine::from_snapshot(&mascot.bundle.animation, &mascot.sm_state);
         let (pending_dx, pending_dy) = sm.pending_movement();
-        let mut surface = query_surface(mascot.x, mascot.y, SPRITE_SIZE, SPRITE_SIZE, pending_dx, pending_dy, &screen, &monitors, &windows);
+        let mut surface = query_surface(mascot.x, mascot.y, size, size, pending_dx, pending_dy, &screen, &monitors, &windows);
         if event == EngineEventKind::Jump {
             // JUMP's schema rules key `when` off which surface the mascot is currently resting
             // on (ground/ceiling/wall), not an edge crossed this exact tick like every other
@@ -197,12 +256,19 @@ impl App {
             if mascot.dragging {
                 continue;
             }
-            step_one_mascot(mascot, &screen, &monitors, &windows);
+            // `speed` lets a mascot run faster (multiple steps this real tick) or slower (skip
+            // some real ticks) than the 60Hz timer -- see tick_accumulator's doc comment.
+            mascot.tick_accumulator += mascot.speed;
+            while mascot.tick_accumulator >= 1.0 {
+                mascot.tick_accumulator -= 1.0;
+                step_one_mascot(mascot, &screen, &monitors, &windows);
+            }
         }
     }
 }
 
 fn step_one_mascot(mascot: &mut MascotInstance, screen: &Rect, monitors: &[Rect], windows: &[Rect]) {
+    let size = sprite_size(mascot);
     let mut sm = StateMachine::from_snapshot(&mascot.bundle.animation, &mascot.sm_state);
 
     // The surface query needs this tick's *total* proposed movement to predict edge crossings
@@ -217,8 +283,8 @@ fn step_one_mascot(mascot: &mut MascotInstance, screen: &Rect, monitors: &[Rect]
     let surface = query_surface(
         mascot.x,
         mascot.y,
-        SPRITE_SIZE,
-        SPRITE_SIZE,
+        size,
+        size,
         anim_dx + fling_dx,
         anim_dy + fling_dy,
         screen,
@@ -251,7 +317,7 @@ fn step_one_mascot(mascot: &mut MascotInstance, screen: &Rect, monitors: &[Rect]
         // grounded, that silently disables it and lets the mascot walk straight off the real
         // screen edge undetected. Snap to the exact floor instead of trusting the animation's
         // own dy (now discarded in favor of this) to land there.
-        mascot.y = surface.floor_y - SPRITE_SIZE;
+        mascot.y = surface.floor_y - size;
     } else if hit_ceiling_this_tick {
         // Symmetric to the floor snap above: a mascot climbing up would otherwise stop a few
         // pixels short of surface.ceiling_y, permanently reading as still airborne and never
@@ -275,7 +341,7 @@ fn step_one_mascot(mascot: &mut MascotInstance, screen: &Rect, monitors: &[Rect]
         .join(&mascot.bundle.manifest.sprites.base_path)
         .join(sprite_filename(&mascot.bundle.manifest.sprites.file_pattern, out.sprite_index));
     if let Ok(frame) = decode_sprite(&sprite_path) {
-        mascot.window.update_frame(&frame);
+        mascot.window.update_frame(&scaled_frame(frame, mascot.scale));
     }
 
     mascot.ticks_since_interaction += 1;

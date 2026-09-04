@@ -26,6 +26,7 @@ pub const WM_MASCOT_FLING: u32 = WM_APP + 11;
 pub const WM_MASCOT_JUMP: u32 = WM_APP + 12;
 pub const WM_MASCOT_CLOSE: u32 = WM_APP + 13;
 pub const WM_MASCOT_DRAG_START: u32 = WM_APP + 14;
+pub const WM_MASCOT_OPEN_SETTINGS: u32 = WM_APP + 15;
 
 struct WindowState {
     frame: RgbaImage,
@@ -95,6 +96,7 @@ unsafe extern "system" fn mascot_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
         WM_RBUTTONUP => {
             let menu = CreatePopupMenu().unwrap();
             let _ = AppendMenuW(menu, MF_STRING, 1, w!("Jump"));
+            let _ = AppendMenuW(menu, MF_STRING, 3, w!("Settings..."));
             let _ = AppendMenuW(menu, MF_STRING, 2, w!("Close"));
             let mut cursor = POINT::default();
             let _ = GetCursorPos(&mut cursor);
@@ -110,6 +112,8 @@ unsafe extern "system" fn mascot_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, 
                 let _ = PostMessageW(Some(state.owner), WM_MASCOT_JUMP, WPARAM(state.instance_id as usize), LPARAM(0));
             } else if choice.0 == 2 {
                 let _ = PostMessageW(Some(state.owner), WM_MASCOT_CLOSE, WPARAM(state.instance_id as usize), LPARAM(0));
+            } else if choice.0 == 3 {
+                let _ = PostMessageW(Some(state.owner), WM_MASCOT_OPEN_SETTINGS, WPARAM(state.instance_id as usize), LPARAM(0));
             }
             LRESULT(0)
         }
