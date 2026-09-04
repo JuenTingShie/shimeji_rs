@@ -44,7 +44,9 @@ fn main() -> windows::core::Result<()> {
     let app_root = dirs_next::data_dir().expect("APPDATA must be resolvable on Windows").join("ShimejiRust");
     let library_root = app_root.join("mascots");
     let session_path = app_root.join("session.json");
-    logging::init(app_root.join("animations.log"));
+    if std::env::args().any(|arg| arg == "--log") {
+        logging::init(app_root.join("animations.log"));
+    }
 
     unsafe {
         // Without an app manifest, Win32 processes default to DPI-unaware, which makes Windows
