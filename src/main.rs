@@ -148,7 +148,7 @@ fn main() -> windows::core::Result<()> {
                 } else if id == "close_all" {
                     app.close_all();
                 } else if id == "exit" {
-                    app.close_all();
+                    app.destroy_all_windows();
                     PostQuitMessage(0);
                 }
             }

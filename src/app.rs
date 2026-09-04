@@ -292,6 +292,19 @@ impl App {
         self.save_session();
     }
 
+    /// Destroys every live mascot window without touching session.json -- used only when the
+    /// whole app is shutting down (see main.rs's "exit" handler). Unlike `close_all`, which is a
+    /// real user action ("Close All" while the app keeps running) and correctly persists "nothing
+    /// is running" as the saved state, quitting should leave the current session on disk so it
+    /// can be restored on the next launch.
+    pub fn destroy_all_windows(&mut self) {
+        for mascot in self.mascots.drain(..) {
+            unsafe {
+                let _ = DestroyWindow(mascot.window.hwnd);
+            }
+        }
+    }
+
     pub fn handle_engine_event(&mut self, instance_id: u32, event: EngineEventKind, fling_velocity: Option<(f64, f64)>) {
         let (screen, monitors, windows) = self.environment.poll(Instant::now());
         let screen = *screen;
