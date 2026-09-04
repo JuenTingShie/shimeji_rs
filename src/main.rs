@@ -114,8 +114,8 @@ fn main() -> windows::core::Result<()> {
                     WM_MASCOT_OPEN_SETTINGS => app.open_settings(msg.wParam.0 as u32),
                     WM_MASCOT_SET_SCALE => app.set_scale(msg.wParam.0 as u32, msg.lParam.0 as i32),
                     WM_MASCOT_SET_SPEED => app.set_speed(msg.wParam.0 as u32, msg.lParam.0 as i32),
-                    WM_SETTINGS_OPENED => app.settings_window_opened(msg.wParam.0 as u32, msg.lParam.0),
-                    WM_SETTINGS_CLOSED => app.settings_window_closed(msg.wParam.0 as u32),
+                    WM_SETTINGS_OPENED => app.settings_window_opened(msg.lParam.0),
+                    WM_SETTINGS_CLOSED => app.settings_window_closed(),
                     WM_DROPFILES => handle_drop(&mut app, HDROP(msg.wParam.0 as *mut _)),
                     _ => {
                         let _ = TranslateMessage(&msg);
@@ -137,10 +137,8 @@ fn main() -> windows::core::Result<()> {
                 let id = event.id.0.as_str();
                 if let Some(slug) = id.strip_prefix("spawn:") {
                     let _ = app.spawn(slug);
-                } else if let Some(id_str) = id.strip_prefix("settings:") {
-                    if let Ok(instance_id) = id_str.parse::<u32>() {
-                        app.open_settings(instance_id);
-                    }
+                } else if id == "settings" {
+                    app.open_settings(0);
                 } else if id == "import" {
                     if let Some(path) = rfd::FileDialog::new().add_filter("Mascot bundle", &["zip"]).pick_file() {
                         if let Ok(bytes) = std::fs::read(&path) {

@@ -13,8 +13,7 @@ use image::RgbaImage;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use windows::Win32::Foundation::{HWND, RECT};
-use windows::Win32::UI::WindowsAndMessaging::{DestroyWindow, GetWindowRect};
-use std::collections::{HashMap, HashSet};
+use windows::Win32::UI::WindowsAndMessaging::{DestroyWindow, GetWindowRect, SetForegroundWindow};
 use std::time::{Duration, Instant};
 
 const IDLE_THRESHOLD_TICKS: u32 = 3600;
@@ -77,8 +76,8 @@ pub struct App {
     pub tray: TrayIcon,
     pub owner: HWND,
     next_instance_id: u32,
-    open_settings_instances: HashSet<u32>,
-    open_settings_hwnds: HashMap<u32, HWND>,
+    settings_open: bool,
+    settings_hwnd: Option<HWND>,
 }
 
 impl App {
@@ -98,8 +97,8 @@ impl App {
             tray,
             owner,
             next_instance_id: 1,
-            open_settings_instances: HashSet::new(),
-            open_settings_hwnds: HashMap::new(),
+            settings_open: false,
+            settings_hwnd: None,
         }
     }
 
@@ -166,15 +165,33 @@ impl App {
         Ok(())
     }
 
-    pub fn open_settings(&mut self, instance_id: u32) {
-        if self.open_settings_instances.contains(&instance_id) {
+    /// Opens the single app-wide settings window, preselecting `preferred_id` if it's currently
+    /// live. If the window is already open, brings it to the foreground instead of opening a
+    /// second one -- there is only ever at most one settings window for the whole app.
+    pub fn open_settings(&mut self, preferred_id: u32) {
+        if self.settings_open {
+            if let Some(hwnd) = self.settings_hwnd {
+                unsafe {
+                    let _ = SetForegroundWindow(hwnd);
+                }
+            }
             return;
         }
-        let Some(mascot) = self.mascots.iter().find(|m| m.id == instance_id) else { return };
-        let scale_pct = (mascot.scale * 100.0).round() as i32;
-        let speed_pct = (mascot.speed * 100.0).round() as i32;
-        self.open_settings_instances.insert(instance_id);
-        crate::settings_ui::open_settings_window(self.owner, instance_id, scale_pct, speed_pct);
+        let mascots: Vec<crate::settings_ui::MascotSettingsEntry> = self
+            .mascots
+            .iter()
+            .map(|m| crate::settings_ui::MascotSettingsEntry {
+                instance_id: m.id,
+                name: m.bundle.manifest.name.clone(),
+                scale_pct: (m.scale * 100.0).round() as i32,
+                speed_pct: (m.speed * 100.0).round() as i32,
+            })
+            .collect();
+        if mascots.is_empty() {
+            return;
+        }
+        self.settings_open = true;
+        crate::settings_ui::open_settings_window(self.owner, mascots, preferred_id);
     }
 
     fn refresh_tray_menu(&mut self) {
@@ -182,9 +199,9 @@ impl App {
         self.tray.set_menu(shimeji::tray::build_menu(&self.catalog, &live));
     }
 
-    pub fn settings_window_opened(&mut self, instance_id: u32, hwnd_raw: isize) {
+    pub fn settings_window_opened(&mut self, hwnd_raw: isize) {
         let hwnd = HWND(hwnd_raw as *mut _);
-        self.open_settings_hwnds.insert(instance_id, hwnd);
+        self.settings_hwnd = Some(hwnd);
         // A settings window is itself a real, visible, titled top-level window -- excluded from
         // the desktop window list for the same reason mascot windows are (see spawn's comment).
         self.environment.window_source.exclude.push(hwnd);
@@ -202,9 +219,9 @@ impl App {
         }
     }
 
-    pub fn settings_window_closed(&mut self, instance_id: u32) {
-        self.open_settings_instances.remove(&instance_id);
-        if let Some(hwnd) = self.open_settings_hwnds.remove(&instance_id) {
+    pub fn settings_window_closed(&mut self) {
+        self.settings_open = false;
+        if let Some(hwnd) = self.settings_hwnd.take() {
             self.environment.window_source.exclude.retain(|h| *h != hwnd);
         }
     }

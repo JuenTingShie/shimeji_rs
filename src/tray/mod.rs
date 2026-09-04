@@ -1,6 +1,6 @@
 use crate::importer::catalog::CatalogEntry;
 use std::path::PathBuf;
-use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIconBuilder};
 
 pub struct TrayIcon {
@@ -46,12 +46,7 @@ pub fn build_menu(catalog: &[CatalogEntry], live_mascots: &[(u32, String)]) -> M
     let _ = menu.append(&MenuItem::with_id("import", "Import Mascot...", true, None));
     if !live_mascots.is_empty() {
         let _ = menu.append(&PredefinedMenuItem::separator());
-        let settings_submenu = Submenu::new("Settings", true);
-        for (id, name) in live_mascots {
-            let item = MenuItem::with_id(format!("settings:{id}"), format!("{name} #{id}"), true, None);
-            let _ = settings_submenu.append(&item);
-        }
-        let _ = menu.append(&settings_submenu);
+        let _ = menu.append(&MenuItem::with_id("settings", "Settings", true, None));
     }
     let _ = menu.append(&MenuItem::with_id("close_all", "Close All", true, None));
     let _ = menu.append(&MenuItem::with_id("exit", "Exit", true, None));
@@ -92,13 +87,13 @@ mod tests {
     }
 
     #[test]
-    fn adds_settings_submenu_with_live_mascots() {
+    fn adds_settings_item_with_live_mascots() {
         let catalog = vec![
             CatalogEntry { slug: "usagi".into(), name: "usagi".into(), dir: PathBuf::from("usagi") },
             CatalogEntry { slug: "neko".into(), name: "neko".into(), dir: PathBuf::from("neko") },
         ];
         let live_mascots = vec![(1, "usagi".to_string())];
         let menu = build_menu(&catalog, &live_mascots);
-        assert_eq!(menu.items().len(), 7); // 2 catalog + import + separator + submenu + close_all + exit
+        assert_eq!(menu.items().len(), 7); // 2 catalog + import + separator + settings + close_all + exit
     }
 }
