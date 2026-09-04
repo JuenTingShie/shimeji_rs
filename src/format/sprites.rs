@@ -28,10 +28,10 @@ mod tests {
 
     #[test]
     fn decodes_a_sample_sprite() {
-        let path = Path::new("tests/fixtures/sample_bundle/sprites/0000.webp");
+        let path = Path::new("tests/fixtures/fixture_bundle/sprites/0000.webp");
         let img = decode_sprite(path).unwrap();
-        assert_eq!(img.width(), 512);
-        assert_eq!(img.height(), 512);
-        assert_eq!(img.as_raw().len(), 512 * 512 * 4);
+        assert_eq!(img.width(), 16);
+        assert_eq!(img.height(), 16);
+        assert_eq!(img.as_raw().len(), 16 * 16 * 4);
     }
 }

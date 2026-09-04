@@ -18,7 +18,7 @@ unsafe extern "system" fn owner_window_proc(hwnd: HWND, msg: u32, wparam: WPARAM
 }
 
 fn main() -> windows::core::Result<()> {
-    let frame = decode_sprite(Path::new("tests/fixtures/sample_bundle/sprites/0000.webp")).unwrap();
+    let frame = decode_sprite(Path::new("tests/fixtures/fixture_bundle/sprites/0000.webp")).unwrap();
 
     unsafe {
         let hinstance = GetModuleHandleW(None)?;

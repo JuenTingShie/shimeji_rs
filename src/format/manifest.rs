@@ -65,16 +65,16 @@ mod tests {
 
     #[test]
     fn parses_sample_manifest() {
-        let json = std::fs::read_to_string("tests/fixtures/sample_manifest.json").unwrap();
+        let json = std::fs::read_to_string("tests/fixtures/fixture_manifest.json").unwrap();
         let manifest: Manifest = serde_json::from_str(&json).unwrap();
 
         assert_eq!(manifest.schema_version, 1);
-        assert_eq!(manifest.name, "usagi");
-        assert_eq!(manifest.name_slug, "usagi");
+        assert_eq!(manifest.name, "sample_mascot");
+        assert_eq!(manifest.name_slug, "sample_mascot");
         assert_eq!(manifest.levels, 4);
         assert_eq!(manifest.animation_schema.schema_id, "legacy_default_v1");
-        assert_eq!(manifest.sprites.sprite_count, 70);
-        assert_eq!(manifest.sprites.size, [512, 512]);
+        assert_eq!(manifest.sprites.sprite_count, 13);
+        assert_eq!(manifest.sprites.size, [16, 16]);
         assert_eq!(manifest.sprites.base_path, "sprites/");
         assert_eq!(manifest.sprites.file_pattern, "%04d.webp");
     }

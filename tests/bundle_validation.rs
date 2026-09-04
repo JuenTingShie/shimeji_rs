@@ -18,7 +18,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) {
 fn sample_copy() -> (tempfile::TempDir, PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("bundle");
-    copy_dir_recursive(Path::new("tests/fixtures/sample_bundle"), &dir);
+    copy_dir_recursive(Path::new("tests/fixtures/fixture_bundle"), &dir);
     (tmp, dir)
 }
 
@@ -26,8 +26,8 @@ fn sample_copy() -> (tempfile::TempDir, PathBuf) {
 fn loads_the_valid_sample_bundle() {
     let (_tmp, dir) = sample_copy();
     let bundle = MascotBundle::load(&dir).unwrap();
-    assert_eq!(bundle.manifest.name, "usagi");
-    assert_eq!(bundle.animation.animations.len(), 37);
+    assert_eq!(bundle.manifest.name, "sample_mascot");
+    assert_eq!(bundle.animation.animations.len(), 15);
 }
 
 #[test]
@@ -48,7 +48,7 @@ fn rejects_missing_sprite_file() {
     fs::remove_file(dir.join("sprites/0000.webp")).unwrap();
 
     let err = MascotBundle::load(&dir).unwrap_err();
-    assert!(matches!(err, BundleError::SpriteCountMismatch { declared: 70, found: 69, .. }));
+    assert!(matches!(err, BundleError::SpriteCountMismatch { declared: 13, found: 12, .. }));
 }
 
 #[test]

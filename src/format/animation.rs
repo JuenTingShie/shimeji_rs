@@ -170,14 +170,14 @@ mod tests {
 
     #[test]
     fn parses_sample_animation_schema() {
-        let json = std::fs::read_to_string("tests/fixtures/sample_animation.json").unwrap();
+        let json = std::fs::read_to_string("tests/fixtures/fixture_animation.json").unwrap();
         let schema: AnimationSchema = serde_json::from_str(&json).unwrap();
 
         assert_eq!(schema.schema_id, "legacy_default_v1");
         assert_eq!(schema.default_animation, "fall");
         assert_eq!(schema.initial_candidates, vec!["fall".to_string()]);
-        assert_eq!(schema.animations.len(), 37);
-        assert_eq!(schema.events.len(), 27);
+        assert_eq!(schema.animations.len(), 15);
+        assert_eq!(schema.events.len(), 12);
 
         let walk_left = schema
             .animations
@@ -188,12 +188,12 @@ mod tests {
         assert_eq!(walk_left.loop_mode, LoopMode::Loop);
         assert_eq!(walk_left.direction, Direction::Left);
         assert_eq!(walk_left.frames.len(), 4);
-        assert_eq!(walk_left.frames[0].sprite, 33);
+        assert_eq!(walk_left.frames[0].sprite, 3);
         assert_eq!(walk_left.frames[0].dx, -2);
         assert_eq!(walk_left.frames[0].duration_ticks, 6);
 
         let auto = walk_left.auto.as_ref().expect("walk_left has auto behavior");
-        assert_eq!(auto.on_timer.len(), 2);
+        assert_eq!(auto.on_timer.len(), 1);
         assert_eq!(auto.on_timer[0].chance, 0.6);
         assert_eq!(auto.on_timer[0].min_ticks, 96);
         assert_eq!(auto.on_timer[0].max_ticks, 96);
@@ -207,7 +207,7 @@ mod tests {
         let climb_auto = climb_left.auto.as_ref().unwrap();
         assert!(matches!(
             climb_auto.max_duration_ticks,
-            Some(MaxDurationTicks::Range { min_ticks: 200, max_ticks: 699 })
+            Some(MaxDurationTicks::Range { min_ticks: 100, max_ticks: 200 })
         ));
 
         assert_eq!(walk_left.border_transitions.len(), 1);
@@ -232,6 +232,6 @@ mod tests {
                     && e.allowed_types.as_deref() == Some(&[SurfaceType::Ground])
             })
             .unwrap();
-        assert_eq!(tap_level4_ground.choices.as_ref().unwrap().len(), 6);
+        assert_eq!(tap_level4_ground.choices.as_ref().unwrap().len(), 2);
     }
 }

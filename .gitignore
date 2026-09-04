@@ -4,3 +4,4 @@
 /tests/fixtures/sample_animation.json
 /tests/fixtures/sample_bundle/
 /tests/fixtures/*.zip
+!/tests/fixtures/fixture_bundle.zip

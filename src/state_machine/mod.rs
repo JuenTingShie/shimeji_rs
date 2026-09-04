@@ -411,7 +411,7 @@ mod tests {
     use rand::prelude::*;
 
     fn schema() -> AnimationSchema {
-        let json = std::fs::read_to_string("tests/fixtures/sample_animation.json").unwrap();
+        let json = std::fs::read_to_string("tests/fixtures/fixture_animation.json").unwrap();
         serde_json::from_str(&json).unwrap()
     }
 
@@ -490,13 +490,13 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(7);
 
         let out1 = sm.step(no_edge(), 4, &mut rng);
-        assert_eq!(out1.sprite_index, 17);
+        assert_eq!(out1.sprite_index, 1);
         for _ in 0..7 {
             sm.step(no_edge(), 4, &mut rng);
         }
-        // after 8 ticks total, frame 2 (sprite 18) should be current
+        // after 8 ticks total, frame 2 (sprite 2) should be current
         let out_after_frame1 = sm.step(no_edge(), 4, &mut rng);
-        assert_eq!(out_after_frame1.sprite_index, 18);
+        assert_eq!(out_after_frame1.sprite_index, 2);
     }
 
     #[test]
@@ -684,10 +684,10 @@ mod tests {
 
         // All 4 frames' sprites must have actually appeared — proves frame_index advanced past 0
         // across the rebuild-per-tick pattern instead of replaying frame 0 every time.
-        assert!(sprites_seen.contains(&33));
-        assert!(sprites_seen.contains(&1));
-        assert!(sprites_seen.contains(&34));
-        assert!(sprites_seen.contains(&2));
+        assert!(sprites_seen.contains(&3));
+        assert!(sprites_seen.contains(&4));
+        assert!(sprites_seen.contains(&5));
+        assert!(sprites_seen.contains(&6));
     }
 
     #[test]

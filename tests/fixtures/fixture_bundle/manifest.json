@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "name": "sample_mascot",
+  "nameSlug": "sample_mascot",
+  "category": "custom",
+  "categorySlug": "custom",
+  "description": "Minimal original test fixture, not derived from any third-party mascot.",
+  "bundleVersion": 1,
+  "minAppVersion": 94,
+  "levels": 4,
+  "origin": "LOCAL",
+  "animationSchema": {
+    "path": "animation.json",
+    "schemaId": "legacy_default_v1",
+    "version": 1
+  },
+  "sprites": {
+    "type": "SEQUENCE",
+    "basePath": "sprites/",
+    "filePattern": "%04d.webp",
+    "spriteCount": 13,
+    "size": [
+      16,
+      16
+    ]
+  },
+  "preview": {
+    "thumbnail": "thumbnail.webp"
+  },
+  "author": {
+    "name": "Test Fixture"
+  },
+  "license": {
+    "type": "CC0",
+    "text": "Public domain test fixture authored for this repository.",
+    "attribution": ""
+  }
+}

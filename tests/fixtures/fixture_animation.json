@@ -1,0 +1,253 @@
+{
+  "schema_id": "legacy_default_v1",
+  "version": 1,
+  "default_animation": "fall",
+  "initial_candidates": [
+    "fall"
+  ],
+  "animations": [
+    {
+      "key": "fall",
+      "type": "AIR",
+      "subtype": "FALL",
+      "level": 1,
+      "loop": "LOOP",
+      "direction": "ANY",
+      "frames": [
+        { "sprite": 0, "dx": 0, "dy": 15, "durationTicks": 20 }
+      ],
+      "borderTransitions": [
+        { "when": "BOTTOM", "facing": "LEFT", "choices": [ { "to": "bounce_left", "weight": 1 } ] },
+        { "when": "BOTTOM", "facing": "RIGHT", "choices": [ { "to": "bounce_right", "weight": 1 } ] }
+      ]
+    },
+    {
+      "key": "bounce_left",
+      "type": "GROUND",
+      "subtype": "BOUNCE",
+      "level": 1,
+      "loop": "ONESHOT",
+      "direction": "LEFT",
+      "frames": [
+        { "sprite": 1, "dx": 0, "dy": 0, "durationTicks": 8 },
+        { "sprite": 2, "dx": 0, "dy": 0, "durationTicks": 8 }
+      ],
+      "auto": {
+        "onFinish": [
+          { "to": "walk_left", "weight": 1, "setFacing": "LEFT" },
+          { "to": "walk_right", "weight": 1, "setFacing": "RIGHT" }
+        ],
+        "onTimer": []
+      }
+    },
+    {
+      "key": "bounce_right",
+      "type": "GROUND",
+      "subtype": "BOUNCE",
+      "level": 1,
+      "loop": "ONESHOT",
+      "direction": "RIGHT",
+      "frames": [
+        { "sprite": 1, "dx": 0, "dy": 0, "durationTicks": 8 },
+        { "sprite": 2, "dx": 0, "dy": 0, "durationTicks": 8 }
+      ],
+      "auto": {
+        "onFinish": [
+          { "to": "walk_left", "weight": 1, "setFacing": "LEFT" },
+          { "to": "walk_right", "weight": 1, "setFacing": "RIGHT" }
+        ],
+        "onTimer": []
+      }
+    },
+    {
+      "key": "walk_left",
+      "type": "GROUND",
+      "subtype": "WALK",
+      "level": 1,
+      "loop": "LOOP",
+      "direction": "LEFT",
+      "frames": [
+        { "sprite": 3, "dx": -2, "dy": 0, "durationTicks": 6 },
+        { "sprite": 4, "dx": -2, "dy": 0, "durationTicks": 6 },
+        { "sprite": 5, "dx": -2, "dy": 0, "durationTicks": 6 },
+        { "sprite": 6, "dx": -2, "dy": 0, "durationTicks": 6 }
+      ],
+      "auto": {
+        "onTimer": [
+          { "choices": [ { "to": "bounce_left", "weight": 1 } ], "minTicks": 96, "maxTicks": 96, "chance": 0.6 }
+        ],
+        "maxDurationTicks": 480
+      },
+      "borderTransitions": [
+        { "when": "LEFT", "choices": [ { "to": "climb_left", "weight": 1 }, { "to": "walk_right", "weight": 1, "setFacing": "RIGHT" } ] }
+      ]
+    },
+    {
+      "key": "walk_right",
+      "type": "GROUND",
+      "subtype": "WALK",
+      "level": 1,
+      "loop": "LOOP",
+      "direction": "RIGHT",
+      "frames": [
+        { "sprite": 3, "dx": 2, "dy": 0, "durationTicks": 6 },
+        { "sprite": 4, "dx": 2, "dy": 0, "durationTicks": 6 },
+        { "sprite": 5, "dx": 2, "dy": 0, "durationTicks": 6 },
+        { "sprite": 6, "dx": 2, "dy": 0, "durationTicks": 6 }
+      ],
+      "auto": {
+        "onTimer": [
+          { "choices": [ { "to": "bounce_right", "weight": 1 } ], "minTicks": 96, "maxTicks": 96, "chance": 0.6 }
+        ],
+        "maxDurationTicks": 480
+      },
+      "borderTransitions": [
+        { "when": "RIGHT", "choices": [ { "to": "climb_right", "weight": 1 }, { "to": "walk_left", "weight": 1, "setFacing": "LEFT" } ] }
+      ]
+    },
+    {
+      "key": "climb_left",
+      "type": "WALL",
+      "subtype": "CLIMB",
+      "level": 1,
+      "loop": "LOOP",
+      "direction": "LEFT",
+      "frames": [
+        { "sprite": 7, "dx": 0, "dy": -2, "durationTicks": 16 }
+      ],
+      "auto": {
+        "onTimer": [],
+        "maxDurationTicks": { "minTicks": 100, "maxTicks": 200 }
+      },
+      "borderTransitions": [
+        { "when": "TOP", "choices": [ { "to": "climb_ceiling_left", "weight": 1 } ] }
+      ]
+    },
+    {
+      "key": "climb_right",
+      "type": "WALL",
+      "subtype": "CLIMB",
+      "level": 1,
+      "loop": "LOOP",
+      "direction": "RIGHT",
+      "frames": [
+        { "sprite": 7, "dx": 0, "dy": -2, "durationTicks": 16 }
+      ],
+      "auto": {
+        "onTimer": [],
+        "maxDurationTicks": { "minTicks": 100, "maxTicks": 200 }
+      },
+      "borderTransitions": [
+        { "when": "TOP", "choices": [ { "to": "climb_ceiling_right", "weight": 1 } ] }
+      ]
+    },
+    {
+      "key": "climb_ceiling_left",
+      "type": "CEILING",
+      "subtype": "HANG",
+      "level": 1,
+      "loop": "LOOP",
+      "direction": "LEFT",
+      "frames": [
+        { "sprite": 8, "dx": -1, "dy": 0, "durationTicks": 16 }
+      ]
+    },
+    {
+      "key": "climb_ceiling_right",
+      "type": "CEILING",
+      "subtype": "HANG",
+      "level": 1,
+      "loop": "LOOP",
+      "direction": "RIGHT",
+      "frames": [
+        { "sprite": 8, "dx": 1, "dy": 0, "durationTicks": 16 }
+      ]
+    },
+    {
+      "key": "drag",
+      "type": "USER",
+      "subtype": "DRAG",
+      "level": 1,
+      "loop": "LOOP",
+      "direction": "ANY",
+      "frames": [
+        { "sprite": 9, "dx": 0, "dy": 0, "durationTicks": 8 }
+      ]
+    },
+    {
+      "key": "fling",
+      "type": "USER",
+      "subtype": "FLING",
+      "level": 2,
+      "loop": "LOOP",
+      "direction": "ANY",
+      "frames": [
+        { "sprite": 10, "dx": 0, "dy": 0, "durationTicks": 250 }
+      ]
+    },
+    {
+      "key": "jump_left",
+      "type": "AIR",
+      "subtype": "JUMP",
+      "level": 2,
+      "loop": "LOOP",
+      "direction": "LEFT",
+      "frames": [
+        { "sprite": 11, "dx": -10, "dy": 0, "durationTicks": 2 }
+      ],
+      "borderTransitions": [
+        { "when": "LEFT", "choices": [ { "to": "climb_left", "weight": 1 } ] }
+      ]
+    },
+    {
+      "key": "jump_right",
+      "type": "AIR",
+      "subtype": "JUMP",
+      "level": 2,
+      "loop": "LOOP",
+      "direction": "RIGHT",
+      "frames": [
+        { "sprite": 11, "dx": 10, "dy": 0, "durationTicks": 2 }
+      ],
+      "borderTransitions": [
+        { "when": "RIGHT", "choices": [ { "to": "climb_right", "weight": 1 } ] }
+      ]
+    },
+    {
+      "key": "jump_up_left",
+      "type": "AIR",
+      "subtype": "JUMP_UP",
+      "level": 2,
+      "loop": "LOOP",
+      "direction": "LEFT",
+      "frames": [
+        { "sprite": 12, "dx": -10, "dy": -8, "durationTicks": 2 }
+      ]
+    },
+    {
+      "key": "jump_up_right",
+      "type": "AIR",
+      "subtype": "JUMP_UP",
+      "level": 2,
+      "loop": "LOOP",
+      "direction": "RIGHT",
+      "frames": [
+        { "sprite": 12, "dx": 10, "dy": -8, "durationTicks": 2 }
+      ]
+    }
+  ],
+  "events": [
+    { "event": "DRAG_START", "from": "*", "to": "drag", "setFacing": "RANDOM" },
+    { "event": "DRAG_END", "from": "drag", "to": "fall", "setFacing": "RANDOM" },
+    { "event": "FLING_START", "from": "*", "choices": [ { "to": "fling", "weight": 1, "setFacing": "EVENT_VELOCITY" } ] },
+    { "event": "FLING_END", "from": "fling", "when": "LEFT", "to": "climb_left" },
+    { "event": "FLING_END", "from": "fling", "when": "RIGHT", "to": "climb_right" },
+    { "event": "FLING_END", "from": "fling", "to": "fall" },
+    { "event": "JUMP", "from": "*", "when": "BOTTOM", "facing": "LEFT", "to": "jump_up_left" },
+    { "event": "JUMP", "from": "*", "when": "BOTTOM", "facing": "RIGHT", "to": "jump_up_right" },
+    { "event": "JUMP", "from": "*", "when": "LEFT", "to": "jump_right" },
+    { "event": "JUMP", "from": "*", "when": "RIGHT", "to": "jump_left" },
+    { "event": "JUMP", "from": "*", "to": "fall" },
+    { "event": "TAP", "minLevel": 4, "maxLevel": 4, "allowedTypes": [ "GROUND" ], "choices": [ { "to": "jump_up_left", "weight": 1 }, { "to": "jump_up_right", "weight": 1 } ] }
+  ]
+}
