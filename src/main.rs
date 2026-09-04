@@ -7,7 +7,7 @@ mod settings_ui;
 use app::App;
 use shimeji::tray::{filter_zip_paths, TrayIcon};
 use shimeji::window::mascot_window::{WM_MASCOT_CLOSE, WM_MASCOT_DRAG_START, WM_MASCOT_FLING, WM_MASCOT_JUMP, WM_MASCOT_OPEN_SETTINGS, WM_MASCOT_TAP};
-use settings_ui::{WM_MASCOT_SET_SCALE, WM_MASCOT_SET_SPEED, WM_SETTINGS_CLOSED, WM_SETTINGS_OPENED};
+use settings_ui::{WM_MASCOT_SET_SCALE, WM_MASCOT_SET_SPEED, WM_SETTINGS_OPENED};
 use std::time::{Duration, Instant};
 use tray_icon::menu::MenuEvent;
 use tray_icon::TrayIconEvent;
@@ -115,7 +115,6 @@ fn main() -> windows::core::Result<()> {
                     WM_MASCOT_SET_SCALE => app.set_scale(msg.wParam.0 as u32, msg.lParam.0 as i32),
                     WM_MASCOT_SET_SPEED => app.set_speed(msg.wParam.0 as u32, msg.lParam.0 as i32),
                     WM_SETTINGS_OPENED => app.settings_window_opened(msg.lParam.0),
-                    WM_SETTINGS_CLOSED => app.settings_window_closed(),
                     WM_DROPFILES => handle_drop(&mut app, HDROP(msg.wParam.0 as *mut _)),
                     _ => {
                         let _ = TranslateMessage(&msg);

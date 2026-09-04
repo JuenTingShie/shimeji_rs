@@ -1,6 +1,8 @@
 use eframe::egui;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use shimeji::window::mascot_window::WM_MASCOT_CLOSE;
+use std::sync::mpsc::Receiver;
+use std::time::Duration;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 use winit::platform::windows::EventLoopBuilderExtWindows;
@@ -8,10 +10,10 @@ use winit::platform::windows::EventLoopBuilderExtWindows;
 pub const WM_MASCOT_SET_SCALE: u32 = WM_APP + 16;
 pub const WM_MASCOT_SET_SPEED: u32 = WM_APP + 17;
 pub const WM_SETTINGS_OPENED: u32 = WM_APP + 18;
-pub const WM_SETTINGS_CLOSED: u32 = WM_APP + 19;
 
 /// One row of the mascot picker: enough state for the settings window to render controls and
 /// report changes back without needing to touch `App`'s own mascot list from another thread.
+#[derive(Clone)]
 pub struct MascotSettingsEntry {
     pub instance_id: u32,
     pub name: String,
@@ -19,26 +21,38 @@ pub struct MascotSettingsEntry {
     pub speed_pct: i32,
 }
 
-/// Spawns the single settings window for the app's whole lifetime (see `App::open_settings`'s
-/// singleton guard), covering every live mascot at once via a picker rather than one window per
-/// mascot. eframe::run_native() blocks its calling thread until the window closes, which is
-/// incompatible with sharing the main mascot loop's thread -- so this runs on its own thread
-/// instead and talks back to `App` purely via `PostMessageW` to the owner HWND, which is
-/// documented safe to call cross-thread and needs no shared/locked state with the main thread.
-pub fn open_settings_window(owner: HWND, mascots: Vec<MascotSettingsEntry>, preferred_id: u32) {
+/// Sent from `App` (main thread) to the persistent settings-window thread. Winit only allows one
+/// event loop to ever be created per process (see `open_settings_window`'s doc comment) -- so
+/// "opening" the settings window after the first time means showing and refocusing the one
+/// window that already exists, not creating a new one.
+#[derive(Clone)]
+pub enum SettingsCommand {
+    Open { mascots: Vec<MascotSettingsEntry>, preferred_id: u32 },
+}
+
+/// Spawns the settings window's thread exactly once for the whole app's lifetime and never lets
+/// it fully close. winit enforces a hard, process-wide, one-time-only rule on creating an
+/// `EventLoop` (`EventLoopBuilder::build` returns `Err(RecreationAttempt)` for every call after
+/// the first, even after the previous event loop's window was closed and dropped) -- so a design
+/// that spawns a fresh thread + fresh `eframe::run_native` call per "open" can only ever show the
+/// window once per process. Instead, the window's OS-level close button is intercepted (see
+/// `SettingsApp::ui`'s `close_requested` check) and turned into a hide, and subsequent "opens"
+/// are delivered as `SettingsCommand`s over `rx` to the still-running app.
+///
+/// eframe::run_native() blocks its calling thread until the (never-really-closing) window exits
+/// with the process, which is incompatible with sharing the main mascot loop's thread -- so this
+/// runs on its own thread instead and talks back to `App` purely via `PostMessageW` to the owner
+/// HWND, which is documented safe to call cross-thread and needs no shared/locked state with the
+/// main thread.
+pub fn open_settings_window(owner: HWND, rx: Receiver<SettingsCommand>) {
     let owner_addr = owner.0 as isize;
     std::thread::spawn(move || {
         let owner = HWND(owner_addr as *mut _);
-        // Guarantees WM_SETTINGS_CLOSED reaches the owner no matter how this thread's scope
-        // ends -- a normal run_native return, an Err return, or a panic unwinding through here
-        // (e.g. glow/GL context creation failing on a machine with no usable GPU driver). A
-        // plain post placed after run_native's call only covers the first two: a panic unwinds
-        // straight past it, which would permanently wedge App's singleton guard.
-        let _guard = PostClosedOnDrop { owner };
         let options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size([280.0, 260.0])
-                .with_resizable(false),
+                .with_resizable(false)
+                .with_visible(true),
             renderer: eframe::Renderer::Glow,
             // winit refuses to create an event loop off the main thread by default (a
             // cross-platform footgun on most platforms, but this app's main thread is
@@ -49,31 +63,27 @@ pub fn open_settings_window(owner: HWND, mascots: Vec<MascotSettingsEntry>, pref
             })),
             ..Default::default()
         };
-        let selected = mascots.iter().position(|m| m.instance_id == preferred_id).unwrap_or(0);
-        let app = SettingsApp { owner, mascots, selected, hwnd_reported: false };
+        let app = SettingsApp {
+            owner,
+            rx,
+            mascots: Vec::new(),
+            selected: 0,
+            hwnd_reported: false,
+            focus_pending_frames: 0,
+        };
         if let Err(err) = eframe::run_native("Mascot Settings", options, Box::new(move |_cc| Ok(Box::new(app)))) {
             crate::logging::log_error("settings_window", &err.to_string());
         }
     });
 }
 
-struct PostClosedOnDrop {
-    owner: HWND,
-}
-
-impl Drop for PostClosedOnDrop {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = PostMessageW(Some(self.owner), WM_SETTINGS_CLOSED, WPARAM(0), LPARAM(0));
-        }
-    }
-}
-
 struct SettingsApp {
     owner: HWND,
+    rx: Receiver<SettingsCommand>,
     mascots: Vec<MascotSettingsEntry>,
     selected: usize,
     hwnd_reported: bool,
+    focus_pending_frames: u8,
 }
 
 impl SettingsApp {
@@ -100,6 +110,32 @@ impl eframe::App for SettingsApp {
                 }
             }
         }
+
+        // The window is never actually allowed to close (see this module's doc comment on
+        // `open_settings_window`) -- the OS close button just hides it, so it can be shown again
+        // later without violating winit's one-event-loop-per-process rule.
+        if ui.ctx().input(|i| i.viewport().close_requested()) {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
+
+        while let Ok(SettingsCommand::Open { mascots, preferred_id }) = self.rx.try_recv() {
+            self.selected = mascots.iter().position(|m| m.instance_id == preferred_id).unwrap_or(0);
+            self.mascots = mascots;
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            // Focus is a no-op while the window is still invisible/minimized, so it's deferred a
+            // couple frames past the Visible(true) above rather than sent in the same frame.
+            self.focus_pending_frames = 2;
+        }
+        if self.focus_pending_frames > 0 {
+            self.focus_pending_frames -= 1;
+            if self.focus_pending_frames == 0 {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
+            }
+        }
+        // Keeps this app waking up to poll `rx` and the close-request flag above even while the
+        // window is hidden and receiving no OS input events.
+        ui.ctx().request_repaint_after(Duration::from_millis(50));
 
         if self.mascots.is_empty() {
             ui.label("No mascots are currently open.");

@@ -13,7 +13,7 @@ use image::RgbaImage;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use windows::Win32::Foundation::{HWND, RECT};
-use windows::Win32::UI::WindowsAndMessaging::{DestroyWindow, GetWindowRect, SetForegroundWindow};
+use windows::Win32::UI::WindowsAndMessaging::{DestroyWindow, GetWindowRect};
 use std::time::{Duration, Instant};
 
 const IDLE_THRESHOLD_TICKS: u32 = 3600;
@@ -76,8 +76,7 @@ pub struct App {
     pub tray: TrayIcon,
     pub owner: HWND,
     next_instance_id: u32,
-    settings_open: bool,
-    settings_hwnd: Option<HWND>,
+    settings_tx: Option<std::sync::mpsc::Sender<crate::settings_ui::SettingsCommand>>,
 }
 
 impl App {
@@ -97,8 +96,7 @@ impl App {
             tray,
             owner,
             next_instance_id: 1,
-            settings_open: false,
-            settings_hwnd: None,
+            settings_tx: None,
         }
     }
 
@@ -166,17 +164,13 @@ impl App {
     }
 
     /// Opens the single app-wide settings window, preselecting `preferred_id` if it's currently
-    /// live. If the window is already open, brings it to the foreground instead of opening a
-    /// second one -- there is only ever at most one settings window for the whole app.
+    /// live. Winit only allows one event loop to ever be created per process, so the window's
+    /// thread is spawned at most once for the whole app's lifetime; every open after the first is
+    /// delivered as a `SettingsCommand` to the still-running window, which shows and refocuses
+    /// itself (see `settings_ui::open_settings_window`'s doc comment for why). If the still-running
+    /// window's thread has actually died (e.g. it failed to create a GL context on first launch),
+    /// the send fails and a fresh thread is spawned to retry.
     pub fn open_settings(&mut self, preferred_id: u32) {
-        if self.settings_open {
-            if let Some(hwnd) = self.settings_hwnd {
-                unsafe {
-                    let _ = SetForegroundWindow(hwnd);
-                }
-            }
-            return;
-        }
         let mascots: Vec<crate::settings_ui::MascotSettingsEntry> = self
             .mascots
             .iter()
@@ -190,8 +184,17 @@ impl App {
         if mascots.is_empty() {
             return;
         }
-        self.settings_open = true;
-        crate::settings_ui::open_settings_window(self.owner, mascots, preferred_id);
+        let cmd = crate::settings_ui::SettingsCommand::Open { mascots, preferred_id };
+        let needs_spawn = match &self.settings_tx {
+            Some(tx) => tx.send(cmd.clone()).is_err(),
+            None => true,
+        };
+        if needs_spawn {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = tx.send(cmd);
+            crate::settings_ui::open_settings_window(self.owner, rx);
+            self.settings_tx = Some(tx);
+        }
     }
 
     fn refresh_tray_menu(&mut self) {
@@ -201,9 +204,10 @@ impl App {
 
     pub fn settings_window_opened(&mut self, hwnd_raw: isize) {
         let hwnd = HWND(hwnd_raw as *mut _);
-        self.settings_hwnd = Some(hwnd);
-        // A settings window is itself a real, visible, titled top-level window -- excluded from
+        // The settings window is itself a real, visible, titled top-level window -- excluded from
         // the desktop window list for the same reason mascot windows are (see spawn's comment).
+        // Reported exactly once: the window is created at most once per process and only ever
+        // hidden, never destroyed (see settings_ui::open_settings_window).
         self.environment.window_source.exclude.push(hwnd);
     }
 
@@ -216,13 +220,6 @@ impl App {
     pub fn set_speed(&mut self, instance_id: u32, pct: i32) {
         if let Some(mascot) = self.mascots.iter_mut().find(|m| m.id == instance_id) {
             mascot.speed = pct as f64 / 100.0;
-        }
-    }
-
-    pub fn settings_window_closed(&mut self) {
-        self.settings_open = false;
-        if let Some(hwnd) = self.settings_hwnd.take() {
-            self.environment.window_source.exclude.retain(|h| *h != hwnd);
         }
     }
 
