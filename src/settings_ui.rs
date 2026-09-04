@@ -18,6 +18,13 @@ pub fn open_settings_window(owner: HWND, instance_id: u32, scale_pct: i32, speed
     let owner_addr = owner.0 as isize;
     std::thread::spawn(move || {
         let owner = HWND(owner_addr as *mut _);
+        // Guarantees WM_SETTINGS_CLOSED reaches the owner no matter how this thread's scope
+        // ends -- a normal run_native return, an Err return, or a panic unwinding through here
+        // (e.g. glow/GL context creation failing on a machine with no usable GPU driver). A
+        // plain post placed after run_native's call only covers the first two: a panic unwinds
+        // straight past it, which would permanently wedge App::open_settings_instances for this
+        // instance_id since nothing would ever release the duplicate-open guard.
+        let _guard = PostClosedOnDrop { owner, instance_id };
         let options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size([260.0, 190.0])
@@ -27,13 +34,20 @@ pub fn open_settings_window(owner: HWND, instance_id: u32, scale_pct: i32, speed
         };
         let app = SettingsApp { owner, instance_id, scale_pct, speed_pct, hwnd_reported: false };
         let _ = eframe::run_native("Mascot Settings", options, Box::new(move |_cc| Ok(Box::new(app))));
-        // run_native blocks until the window closes, however it closes -- including an internal
-        // startup failure. Post this unconditionally after it returns so App's duplicate-open
-        // guard (App::open_settings_instances) can never wedge on a thread that silently died.
-        unsafe {
-            let _ = PostMessageW(Some(owner), WM_SETTINGS_CLOSED, WPARAM(instance_id as usize), LPARAM(0));
-        }
     });
+}
+
+struct PostClosedOnDrop {
+    owner: HWND,
+    instance_id: u32,
+}
+
+impl Drop for PostClosedOnDrop {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = PostMessageW(Some(self.owner), WM_SETTINGS_CLOSED, WPARAM(self.instance_id as usize), LPARAM(0));
+        }
+    }
 }
 
 struct SettingsApp {

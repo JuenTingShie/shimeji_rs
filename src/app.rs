@@ -109,7 +109,7 @@ impl App {
                 self.catalog = shimeji::importer::catalog::load_catalog(&self.library_root).unwrap_or_default();
                 self.tray.set_menu(shimeji::tray::build_menu(&self.catalog));
             }
-            Err(_err) => {}
+            Err(err) => crate::logging::log_error("import", &err.to_string()),
         }
     }
 
@@ -117,7 +117,10 @@ impl App {
         let Some(entry) = self.catalog.iter().find(|e| e.slug == slug) else { return Ok(()) };
         let bundle = match MascotBundle::load(&entry.dir) {
             Ok(b) => b,
-            Err(_err) => return Ok(()),
+            Err(err) => {
+                crate::logging::log_error("spawn", &err.to_string());
+                return Ok(());
+            }
         };
 
         let sm_state = StateMachine::initial_snapshot(&bundle.animation);
