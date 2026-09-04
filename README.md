@@ -86,3 +86,7 @@ geometry. Win32 window/tray/input code is not covered by automated tests —
 it was verified manually by running the app (see
 `docs/superpowers/plans/2026-09-03-windows-native-shimeji.md`, Task 18/19,
 for the checklist and what was found).
+
+## License
+
+MIT — see [LICENSE](LICENSE).
