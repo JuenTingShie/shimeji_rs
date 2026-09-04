@@ -1,72 +1,84 @@
-pub mod menu;
-
-use windows::Win32::Foundation::HWND;
-use windows::Win32::UI::Shell::{
-    Shell_NotifyIconW, NOTIFYICONDATAW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE,
-};
-use windows::Win32::UI::WindowsAndMessaging::{LoadIconW, IDI_APPLICATION, WM_APP};
-
-pub const WM_TRAY_CALLBACK: u32 = WM_APP + 1;
+use crate::importer::catalog::CatalogEntry;
+use std::path::PathBuf;
+use tray_icon::menu::{Menu, MenuItem};
+use tray_icon::{Icon, TrayIconBuilder};
 
 pub struct TrayIcon {
-    data: NOTIFYICONDATAW,
+    inner: tray_icon::TrayIcon,
 }
 
 impl TrayIcon {
-    pub fn create(owner: HWND) -> windows::core::Result<TrayIcon> {
-        let mut data = NOTIFYICONDATAW::default();
-        data.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
-        data.hWnd = owner;
-        data.uID = 1;
-        data.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-        data.uCallbackMessage = WM_TRAY_CALLBACK;
-        data.hIcon = unsafe { LoadIconW(None, IDI_APPLICATION)? };
-        let tip = "Shimeji\0".encode_utf16().collect::<Vec<u16>>();
-        data.szTip[..tip.len()].copy_from_slice(&tip);
+    pub fn create() -> tray_icon::Result<TrayIcon> {
+        let inner = TrayIconBuilder::new()
+            .with_icon(placeholder_icon())
+            .with_tooltip("Shimeji")
+            .with_menu_on_left_click(false)
+            .build()?;
+        Ok(TrayIcon { inner })
+    }
 
-        unsafe {
-            Shell_NotifyIconW(NIM_ADD, &data).ok()?;
-        }
-        Ok(TrayIcon { data })
+    /// Replaces the tray icon's menu -- called once after the catalog first loads and again
+    /// every time it changes (an import), rather than rebuilt on every right-click as the old
+    /// raw Win32 code did, since tray-icon shows whatever menu is currently set automatically.
+    pub fn set_menu(&self, menu: Menu) {
+        self.inner.set_menu(Some(Box::new(menu)));
     }
 }
 
-impl Drop for TrayIcon {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = Shell_NotifyIconW(NIM_DELETE, &self.data);
-        }
+/// A plain solid-color placeholder icon -- this was already a generic, unbranded OS icon
+/// (`IDI_APPLICATION`) before this migration, not a real app icon, so a flat color square is not
+/// a visual regression. Swap for a real embedded .ico/.png later if desired; out of scope here.
+fn placeholder_icon() -> Icon {
+    const SIZE: u32 = 32;
+    let mut img = image::RgbaImage::new(SIZE, SIZE);
+    for px in img.pixels_mut() {
+        *px = image::Rgba([70, 130, 180, 255]);
     }
+    Icon::from_rgba(img.into_raw(), SIZE, SIZE).expect("fixed 32x32 opaque buffer is always a valid icon")
 }
 
-impl TrayIcon {
-    /// Explorer re-broadcasts "TaskbarCreated" to every top-level window whenever it restarts
-    /// (crash, manual restart, some shell-extension installs) or the taskbar is otherwise
-    /// recreated. Any NIM_ADD registration from before that point is silently gone; the icon
-    /// only comes back if the app notices this broadcast and re-adds it.
-    pub fn readd(&self) {
-        unsafe {
-            let _ = Shell_NotifyIconW(NIM_ADD, &self.data);
-        }
+pub fn build_menu(catalog: &[CatalogEntry]) -> Menu {
+    let menu = Menu::new();
+    for entry in catalog {
+        let item = MenuItem::with_id(format!("spawn:{}", entry.slug), &entry.name, true, None);
+        let _ = menu.append(&item);
     }
+    let _ = menu.append(&MenuItem::with_id("import", "Import Mascot...", true, None));
+    let _ = menu.append(&MenuItem::with_id("close_all", "Close All", true, None));
+    let _ = menu.append(&MenuItem::with_id("exit", "Exit", true, None));
+    menu
 }
 
-impl TrayIcon {
-    /// Shows a Windows balloon notification from the tray icon — used for both import failures
-    /// ("this doesn't look like a mascot bundle: ...") and successes, per the spec's requirement
-    /// that a rejected import explains why.
-    pub fn notify(&self, title: &str, message: &str) {
-        use windows::Win32::UI::Shell::NIF_INFO;
-        let mut data = self.data;
-        data.uFlags |= NIF_INFO;
-        let title_u16 = title.encode_utf16().collect::<Vec<u16>>();
-        let len = title_u16.len().min(data.szInfoTitle.len() - 1);
-        data.szInfoTitle[..len].copy_from_slice(&title_u16[..len]);
-        let msg_u16 = message.encode_utf16().collect::<Vec<u16>>();
-        let len = msg_u16.len().min(data.szInfo.len() - 1);
-        data.szInfo[..len].copy_from_slice(&msg_u16[..len]);
-        unsafe {
-            let _ = Shell_NotifyIconW(windows::Win32::UI::Shell::NIM_MODIFY, &data);
-        }
+pub fn filter_zip_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
+    paths
+        .iter()
+        .filter(|p| p.extension().map_or(false, |ext| ext.eq_ignore_ascii_case("zip")))
+        .cloned()
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keeps_only_zip_paths_case_insensitively() {
+        let paths = vec![
+            PathBuf::from("C:/drop/usagi.zip"),
+            PathBuf::from("C:/drop/readme.txt"),
+            PathBuf::from("C:/drop/OTHER.ZIP"),
+        ];
+        let kept = filter_zip_paths(&paths);
+        assert_eq!(kept, vec![PathBuf::from("C:/drop/usagi.zip"), PathBuf::from("C:/drop/OTHER.ZIP")]);
+    }
+
+    #[test]
+    fn builds_a_menu_item_per_catalog_entry_plus_the_three_fixed_items() {
+        let catalog = vec![
+            CatalogEntry { slug: "usagi".into(), name: "usagi".into(), dir: PathBuf::from("usagi") },
+            CatalogEntry { slug: "neko".into(), name: "neko".into(), dir: PathBuf::from("neko") },
+        ];
+        let menu = build_menu(&catalog);
+        assert_eq!(menu.items().len(), 5); // 2 catalog entries + import + close_all + exit
     }
 }

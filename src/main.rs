@@ -4,19 +4,19 @@ mod app;
 mod logging;
 
 use app::App;
-use shimeji::importer::catalog::CatalogEntry;
-use shimeji::tray::menu::{build_spawn_items, filter_zip_paths, CLOSE_ALL_MENU_ID, EXIT_MENU_ID, IMPORT_MENU_ID};
-use shimeji::tray::{TrayIcon, WM_TRAY_CALLBACK};
+use shimeji::tray::{filter_zip_paths, TrayIcon};
 use shimeji::window::mascot_window::{WM_MASCOT_CLOSE, WM_MASCOT_DRAG_START, WM_MASCOT_FLING, WM_MASCOT_JUMP, WM_MASCOT_OPEN_SETTINGS, WM_MASCOT_TAP};
 use shimeji::window::settings_window::{WM_MASCOT_SET_SCALE, WM_MASCOT_SET_SPEED, WM_SETTINGS_CLOSED};
 use std::time::{Duration, Instant};
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
+use tray_icon::menu::MenuEvent;
+use tray_icon::TrayIconEvent;
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW, GetCursorPos,
-    PeekMessageW, PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow, SetTimer,
-    TrackPopupMenu, TranslateMessage, MF_STRING, MSG, PM_REMOVE, TPM_RETURNCMD, TPM_RIGHTBUTTON,
-    WM_DESTROY, WM_DROPFILES, WM_NULL, WM_QUIT, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW,
+    PeekMessageW, PostMessageW, PostQuitMessage, RegisterClassW, SetTimer,
+    TranslateMessage, MSG, PM_REMOVE,
+    WM_DESTROY, WM_DROPFILES, WM_QUIT, WM_TIMER, WNDCLASSW,
     WS_EX_TOOLWINDOW, WS_POPUP,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -26,14 +26,13 @@ use windows::core::w;
 const TICK_TIMER_ID: usize = 1;
 const TICK_INTERVAL_MS: u32 = 1000 / 60;
 
-// Explorer delivers the Shell_NotifyIcon callback (and, on some builds, WM_DROPFILES) via
-// SendMessage rather than PostMessage. A SendMessage from another process is dispatched
-// straight into this WndProc as a side effect of the receiving thread pumping messages
-// (PeekMessageW/GetMessageW) — it never becomes a MSG the main loop's PeekMessageW call
-// returns, so the loop's `match msg.message` never sees it. Re-post it so the existing
-// queue-based handling in main()'s loop still runs it exactly once.
+// Explorer delivers WM_DROPFILES via SendMessage rather than PostMessage. A SendMessage from
+// another process is dispatched straight into this WndProc as a side effect of the receiving
+// thread pumping messages (PeekMessageW/GetMessageW) — it never becomes a MSG the main loop's
+// PeekMessageW call returns, so the loop's `match msg.message` never sees it. Re-post it so the
+// existing queue-based handling in main()'s loop still runs it exactly once.
 unsafe extern "system" fn owner_window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if msg == WM_TRAY_CALLBACK || msg == WM_DROPFILES {
+    if msg == WM_DROPFILES {
         let _ = unsafe { PostMessageW(Some(hwnd), msg, wparam, lparam) };
         return LRESULT(0);
     }
@@ -81,14 +80,9 @@ fn main() -> windows::core::Result<()> {
         )?;
         DragAcceptFiles(owner, true);
 
-        let tray = TrayIcon::create(owner)?;
+        let tray = TrayIcon::create().expect("failed to create tray icon");
         let mut app = App::new(library_root, owner, tray);
         SetTimer(Some(owner), TICK_TIMER_ID, TICK_INTERVAL_MS, None);
-
-        // Explorer broadcasts this registered message to every top-level window when the
-        // taskbar is (re)created, e.g. after Explorer crashes and restarts — see
-        // TrayIcon::readd's doc comment.
-        let wm_taskbar_created = RegisterWindowMessageW(w!("TaskbarCreated"));
 
         let mut msg = MSG::default();
         let mut last_tick = Instant::now();
@@ -120,13 +114,7 @@ fn main() -> windows::core::Result<()> {
                     WM_MASCOT_SET_SCALE => app.set_scale(msg.wParam.0 as u32, msg.lParam.0 as i32),
                     WM_MASCOT_SET_SPEED => app.set_speed(msg.wParam.0 as u32, msg.lParam.0 as i32),
                     WM_SETTINGS_CLOSED => app.settings_window_closed(msg.wParam.0),
-                    WM_TRAY_CALLBACK => {
-                        if (msg.lParam.0 as u32) == WM_RBUTTONUP {
-                            show_tray_menu(owner, &mut app);
-                        }
-                    }
                     WM_DROPFILES => handle_drop(&mut app, HDROP(msg.wParam.0 as *mut _)),
-                    m if m == wm_taskbar_created => app.tray.readd(),
                     _ => {
                         let _ = TranslateMessage(&msg);
                         DispatchMessageW(&msg);
@@ -135,6 +123,30 @@ fn main() -> windows::core::Result<()> {
             } else if last_tick.elapsed() >= Duration::from_millis(TICK_INTERVAL_MS as u64) {
                 app.tick(Instant::now());
                 last_tick = Instant::now();
+            }
+
+            while let Ok(_event) = TrayIconEvent::receiver().try_recv() {
+                // Not acted on individually (with_menu_on_left_click(false) plus a menu already
+                // being set makes tray-icon show it automatically on right-click) -- still drained
+                // every iteration because the channel is otherwise unbounded and Move fires
+                // continuously while hovering.
+            }
+            while let Ok(event) = MenuEvent::receiver().try_recv() {
+                let id = event.id.0.as_str();
+                if let Some(slug) = id.strip_prefix("spawn:") {
+                    let _ = app.spawn(slug);
+                } else if id == "import" {
+                    if let Some(path) = rfd::FileDialog::new().add_filter("Mascot bundle", &["zip"]).pick_file() {
+                        if let Ok(bytes) = std::fs::read(&path) {
+                            app.import_from_bytes(&bytes);
+                        }
+                    }
+                } else if id == "close_all" {
+                    app.close_all();
+                } else if id == "exit" {
+                    app.close_all();
+                    PostQuitMessage(0);
+                }
             }
         }
     }
@@ -154,50 +166,5 @@ unsafe fn handle_drop(app: &mut App, hdrop: HDROP) {
         if let Ok(bytes) = std::fs::read(&path) {
             app.import_from_bytes(&bytes);
         }
-    }
-}
-
-unsafe fn show_tray_menu(owner: HWND, app: &mut App) {
-    let menu = CreatePopupMenu().unwrap();
-    let mut labels: Vec<(u16, CatalogEntry)> = Vec::new();
-    for (id, label) in build_spawn_items(&app.catalog) {
-        let entry = app.catalog[(id - shimeji::tray::menu::SPAWN_MENU_ID_BASE) as usize].clone();
-        let wide: Vec<u16> = label.encode_utf16().chain(std::iter::once(0)).collect();
-        let _ = AppendMenuW(menu, MF_STRING, id as usize, windows::core::PCWSTR(wide.as_ptr()));
-        labels.push((id, entry));
-    }
-    let _ = AppendMenuW(menu, MF_STRING, IMPORT_MENU_ID as usize, w!("Import Mascot..."));
-    let _ = AppendMenuW(menu, MF_STRING, CLOSE_ALL_MENU_ID as usize, w!("Close All"));
-    let _ = AppendMenuW(menu, MF_STRING, EXIT_MENU_ID as usize, w!("Exit"));
-
-    let mut cursor = POINT::default();
-    let _ = GetCursorPos(&mut cursor);
-    let _ = SetForegroundWindow(owner);
-    let choice = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD, cursor.x, cursor.y, Some(0), owner, None).0 as u16;
-    // CreatePopupMenu's HMENU is a USER object the process owns until explicitly destroyed --
-    // TrackPopupMenu does not free it. Windows caps USER handles per process (~10,000 by
-    // default); leaking one per right-click eventually exhausts that quota and makes
-    // CreatePopupMenu itself start failing elsewhere in the app.
-    let _ = DestroyMenu(menu);
-    // Required Win32 idiom for popup menus on an owner that isn't the shell's own foreground
-    // window (our owner is an invisible WS_POPUP tool window): without this trailing WM_NULL,
-    // the owner can be left in a state where a *later* TrackPopupMenu call renders the menu but
-    // silently swallows every click on it. See Raymond Chen / MSDN guidance on
-    // SetForegroundWindow + TrackPopupMenu + PostMessage(WM_NULL).
-    let _ = PostMessageW(Some(owner), WM_NULL, WPARAM(0), LPARAM(0));
-
-    if choice == IMPORT_MENU_ID {
-        if let Some(path) = rfd::FileDialog::new().add_filter("Mascot bundle", &["zip"]).pick_file() {
-            if let Ok(bytes) = std::fs::read(&path) {
-                app.import_from_bytes(&bytes);
-            }
-        }
-    } else if choice == CLOSE_ALL_MENU_ID {
-        app.close_all();
-    } else if choice == EXIT_MENU_ID {
-        app.close_all();
-        PostQuitMessage(0);
-    } else if let Some((_, entry)) = labels.into_iter().find(|(id, _)| *id == choice) {
-        let _ = app.spawn(&entry.slug);
     }
 }

@@ -87,18 +87,17 @@ impl App {
             Win32WindowSource { exclude: Vec::new() },
             Duration::from_millis(150),
         );
+        tray.set_menu(shimeji::tray::build_menu(&catalog));
         App { library_root, catalog, mascots: Vec::new(), environment, tray, owner, next_instance_id: 1 }
     }
 
     pub fn import_from_bytes(&mut self, zip_bytes: &[u8]) {
         match shimeji::importer::import_zip(zip_bytes, &self.library_root) {
-            Ok(entry) => {
-                self.tray.notify("Mascot imported", &format!("\"{}\" is ready to spawn.", entry.name));
+            Ok(_entry) => {
                 self.catalog = shimeji::importer::catalog::load_catalog(&self.library_root).unwrap_or_default();
+                self.tray.set_menu(shimeji::tray::build_menu(&self.catalog));
             }
-            Err(err) => {
-                self.tray.notify("Import failed", &err.to_string());
-            }
+            Err(_err) => {}
         }
     }
 
@@ -106,10 +105,7 @@ impl App {
         let Some(entry) = self.catalog.iter().find(|e| e.slug == slug) else { return Ok(()) };
         let bundle = match MascotBundle::load(&entry.dir) {
             Ok(b) => b,
-            Err(err) => {
-                self.tray.notify("Could not spawn mascot", &err.to_string());
-                return Ok(());
-            }
+            Err(_err) => return Ok(()),
         };
 
         let sm_state = StateMachine::initial_snapshot(&bundle.animation);
