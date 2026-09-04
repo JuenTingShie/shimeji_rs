@@ -156,7 +156,7 @@ impl eframe::App for SettingsApp {
         ui.separator();
 
         let instance_id = self.mascots[self.selected].instance_id;
-        if ui.add(egui::Slider::new(&mut self.mascots[self.selected].scale_pct, 50..=200).text("Scale %")).changed() {
+        if ui.add(egui::Slider::new(&mut self.mascots[self.selected].scale_pct, 10..=400).text("Scale %")).changed() {
             self.post(WM_MASCOT_SET_SCALE, instance_id, self.mascots[self.selected].scale_pct);
         }
         if ui.add(egui::Slider::new(&mut self.mascots[self.selected].speed_pct, 25..=300).text("Speed %")).changed() {
