@@ -87,6 +87,13 @@ it was verified manually by running the app (see
 `docs/superpowers/plans/2026-09-03-windows-native-shimeji.md`, Task 18/19,
 for the checklist and what was found).
 
+## Releases
+
+Every push to `main` checks the `version` in `Cargo.toml`. If that version
+hasn't been released yet, CI builds `shimeji.exe` and publishes it as a
+GitHub Release tagged `v<version>`. To cut a new release, bump the version
+in `Cargo.toml` before merging — pushes that don't change it are a no-op.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
