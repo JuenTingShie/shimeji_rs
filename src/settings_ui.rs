@@ -3,6 +3,7 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use shimeji::window::mascot_window::WM_MASCOT_CLOSE;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
+use winit::platform::windows::EventLoopBuilderExtWindows;
 
 pub const WM_MASCOT_SET_SCALE: u32 = WM_APP + 16;
 pub const WM_MASCOT_SET_SPEED: u32 = WM_APP + 17;
@@ -30,10 +31,19 @@ pub fn open_settings_window(owner: HWND, instance_id: u32, scale_pct: i32, speed
                 .with_inner_size([260.0, 190.0])
                 .with_resizable(false),
             renderer: eframe::Renderer::Glow,
+            // winit refuses to create an event loop off the main thread by default (a
+            // cross-platform footgun on most platforms, but this app's main thread is
+            // permanently occupied by its own Win32 message loop) -- without this, run_native
+            // below panics immediately and no window ever appears.
+            event_loop_builder: Some(Box::new(|builder| {
+                builder.with_any_thread(true);
+            })),
             ..Default::default()
         };
         let app = SettingsApp { owner, instance_id, scale_pct, speed_pct, hwnd_reported: false };
-        let _ = eframe::run_native("Mascot Settings", options, Box::new(move |_cc| Ok(Box::new(app))));
+        if let Err(err) = eframe::run_native("Mascot Settings", options, Box::new(move |_cc| Ok(Box::new(app)))) {
+            crate::logging::log_error("settings_window", &err.to_string());
+        }
     });
 }
 
