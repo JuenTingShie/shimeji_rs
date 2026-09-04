@@ -89,7 +89,7 @@ impl App {
             Win32WindowSource { exclude: Vec::new() },
             Duration::from_millis(150),
         );
-        tray.set_menu(shimeji::tray::build_menu(&catalog));
+        tray.set_menu(shimeji::tray::build_menu(&catalog, &[]));
         App {
             library_root,
             catalog,
@@ -107,7 +107,7 @@ impl App {
         match shimeji::importer::import_zip(zip_bytes, &self.library_root) {
             Ok(_entry) => {
                 self.catalog = shimeji::importer::catalog::load_catalog(&self.library_root).unwrap_or_default();
-                self.tray.set_menu(shimeji::tray::build_menu(&self.catalog));
+                self.refresh_tray_menu();
             }
             Err(err) => crate::logging::log_error("import", &err.to_string()),
         }
@@ -162,6 +162,7 @@ impl App {
             speed: 1.0,
             tick_accumulator: 0.0,
         });
+        self.refresh_tray_menu();
         Ok(())
     }
 
@@ -174,6 +175,11 @@ impl App {
         let speed_pct = (mascot.speed * 100.0).round() as i32;
         self.open_settings_instances.insert(instance_id);
         crate::settings_ui::open_settings_window(self.owner, instance_id, scale_pct, speed_pct);
+    }
+
+    fn refresh_tray_menu(&mut self) {
+        let live: Vec<(u32, String)> = self.mascots.iter().map(|m| (m.id, m.bundle.manifest.name.clone())).collect();
+        self.tray.set_menu(shimeji::tray::build_menu(&self.catalog, &live));
     }
 
     pub fn settings_window_opened(&mut self, instance_id: u32, hwnd_raw: isize) {
@@ -210,6 +216,7 @@ impl App {
             unsafe {
                 let _ = DestroyWindow(mascot.window.hwnd);
             }
+            self.refresh_tray_menu();
         }
     }
 
@@ -220,6 +227,7 @@ impl App {
                 let _ = DestroyWindow(mascot.window.hwnd);
             }
         }
+        self.refresh_tray_menu();
     }
 
     pub fn handle_engine_event(&mut self, instance_id: u32, event: EngineEventKind, fling_velocity: Option<(f64, f64)>) {

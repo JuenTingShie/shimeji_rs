@@ -1,6 +1,6 @@
 use crate::importer::catalog::CatalogEntry;
 use std::path::PathBuf;
-use tray_icon::menu::{Menu, MenuItem};
+use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIconBuilder};
 
 pub struct TrayIcon {
@@ -37,13 +37,22 @@ fn placeholder_icon() -> Icon {
     Icon::from_rgba(img.into_raw(), SIZE, SIZE).expect("fixed 32x32 opaque buffer is always a valid icon")
 }
 
-pub fn build_menu(catalog: &[CatalogEntry]) -> Menu {
+pub fn build_menu(catalog: &[CatalogEntry], live_mascots: &[(u32, String)]) -> Menu {
     let menu = Menu::new();
     for entry in catalog {
         let item = MenuItem::with_id(format!("spawn:{}", entry.slug), &entry.name, true, None);
         let _ = menu.append(&item);
     }
     let _ = menu.append(&MenuItem::with_id("import", "Import Mascot...", true, None));
+    if !live_mascots.is_empty() {
+        let _ = menu.append(&PredefinedMenuItem::separator());
+        let settings_submenu = Submenu::new("Settings", true);
+        for (id, name) in live_mascots {
+            let item = MenuItem::with_id(format!("settings:{id}"), format!("{name} #{id}"), true, None);
+            let _ = settings_submenu.append(&item);
+        }
+        let _ = menu.append(&settings_submenu);
+    }
     let _ = menu.append(&MenuItem::with_id("close_all", "Close All", true, None));
     let _ = menu.append(&MenuItem::with_id("exit", "Exit", true, None));
     menu
@@ -78,7 +87,18 @@ mod tests {
             CatalogEntry { slug: "usagi".into(), name: "usagi".into(), dir: PathBuf::from("usagi") },
             CatalogEntry { slug: "neko".into(), name: "neko".into(), dir: PathBuf::from("neko") },
         ];
-        let menu = build_menu(&catalog);
+        let menu = build_menu(&catalog, &[]);
         assert_eq!(menu.items().len(), 5); // 2 catalog entries + import + close_all + exit
+    }
+
+    #[test]
+    fn adds_settings_submenu_with_live_mascots() {
+        let catalog = vec![
+            CatalogEntry { slug: "usagi".into(), name: "usagi".into(), dir: PathBuf::from("usagi") },
+            CatalogEntry { slug: "neko".into(), name: "neko".into(), dir: PathBuf::from("neko") },
+        ];
+        let live_mascots = vec![(1, "usagi".to_string())];
+        let menu = build_menu(&catalog, &live_mascots);
+        assert_eq!(menu.items().len(), 7); // 2 catalog + import + separator + submenu + close_all + exit
     }
 }

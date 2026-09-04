@@ -137,6 +137,10 @@ fn main() -> windows::core::Result<()> {
                 let id = event.id.0.as_str();
                 if let Some(slug) = id.strip_prefix("spawn:") {
                     let _ = app.spawn(slug);
+                } else if let Some(id_str) = id.strip_prefix("settings:") {
+                    if let Ok(instance_id) = id_str.parse::<u32>() {
+                        app.open_settings(instance_id);
+                    }
                 } else if id == "import" {
                     if let Some(path) = rfd::FileDialog::new().add_filter("Mascot bundle", &["zip"]).pick_file() {
                         if let Ok(bytes) = std::fs::read(&path) {
