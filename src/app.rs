@@ -41,6 +41,7 @@ fn scaled_frame(frame: RgbaImage, scale: f64) -> RgbaImage {
 
 pub struct MascotInstance {
     pub id: u32,
+    pub slug: String,
     pub bundle: MascotBundle,
     // Holds the state machine's mid-animation progress (frame position, tick counts, resolved
     // timers) between ticks. A `StateMachine<'a>` can't be stored here directly — it borrows
@@ -75,12 +76,13 @@ pub struct App {
     pub environment: EnvironmentTracker<Win32MonitorSource, Win32WindowSource>,
     pub tray: TrayIcon,
     pub owner: HWND,
+    session_path: std::path::PathBuf,
     next_instance_id: u32,
     settings_tx: Option<std::sync::mpsc::Sender<crate::settings_ui::SettingsCommand>>,
 }
 
 impl App {
-    pub fn new(library_root: std::path::PathBuf, owner: HWND, tray: TrayIcon) -> Self {
+    pub fn new(library_root: std::path::PathBuf, session_path: std::path::PathBuf, owner: HWND, tray: TrayIcon) -> Self {
         let catalog = shimeji::importer::catalog::load_catalog(&library_root).unwrap_or_default();
         let environment = EnvironmentTracker::new(
             Win32MonitorSource,
@@ -88,16 +90,19 @@ impl App {
             Duration::from_millis(150),
         );
         tray.set_menu(shimeji::tray::build_menu(&catalog, &[]));
-        App {
+        let mut app = App {
             library_root,
             catalog,
             mascots: Vec::new(),
             environment,
             tray,
             owner,
+            session_path,
             next_instance_id: 1,
             settings_tx: None,
-        }
+        };
+        app.restore_session();
+        app
     }
 
     pub fn import_from_bytes(&mut self, zip_bytes: &[u8]) {
@@ -145,6 +150,7 @@ impl App {
 
         self.mascots.push(MascotInstance {
             id,
+            slug: slug.to_string(),
             bundle,
             sm_state,
             window,
@@ -160,6 +166,7 @@ impl App {
             tick_accumulator: 0.0,
         });
         self.refresh_tray_menu();
+        self.save_session();
         Ok(())
     }
 
@@ -202,6 +209,43 @@ impl App {
         self.tray.set_menu(shimeji::tray::build_menu(&self.catalog, &live));
     }
 
+    fn save_session(&self) {
+        let entries: Vec<shimeji::session::SessionEntry> = self
+            .mascots
+            .iter()
+            .map(|m| shimeji::session::SessionEntry { slug: m.slug.clone(), scale: m.scale, speed: m.speed })
+            .collect();
+        if let Err(err) = shimeji::session::save_session(&self.session_path, &entries) {
+            crate::logging::log_error("session", &err.to_string());
+        }
+    }
+
+    /// Restores last session's live mascots (by catalog slug) and their scale/speed, run once
+    /// from `App::new`. Position is intentionally not restored -- every restored mascot spawns at
+    /// the same default point a fresh manual spawn would. An entry whose slug no longer resolves
+    /// to a loadable bundle (removed/renamed/corrupt since last run) is silently dropped; the
+    /// re-save after the loop prunes it from session.json instead of retrying it forever.
+    fn restore_session(&mut self) {
+        let entries = match shimeji::session::load_session(&self.session_path) {
+            Ok(entries) => entries,
+            Err(err) => {
+                crate::logging::log_error("session", &err.to_string());
+                return;
+            }
+        };
+        for entry in &entries {
+            let before = self.mascots.len();
+            let _ = self.spawn(&entry.slug);
+            if self.mascots.len() > before {
+                if let Some(mascot) = self.mascots.last_mut() {
+                    mascot.scale = entry.scale;
+                    mascot.speed = entry.speed;
+                }
+            }
+        }
+        self.save_session();
+    }
+
     pub fn settings_window_opened(&mut self, hwnd_raw: isize) {
         let hwnd = HWND(hwnd_raw as *mut _);
         // The settings window is itself a real, visible, titled top-level window -- excluded from
@@ -215,12 +259,14 @@ impl App {
         if let Some(mascot) = self.mascots.iter_mut().find(|m| m.id == instance_id) {
             mascot.scale = pct as f64 / 100.0;
         }
+        self.save_session();
     }
 
     pub fn set_speed(&mut self, instance_id: u32, pct: i32) {
         if let Some(mascot) = self.mascots.iter_mut().find(|m| m.id == instance_id) {
             mascot.speed = pct as f64 / 100.0;
         }
+        self.save_session();
     }
 
     pub fn close(&mut self, instance_id: u32) {
@@ -231,6 +277,7 @@ impl App {
                 let _ = DestroyWindow(mascot.window.hwnd);
             }
             self.refresh_tray_menu();
+            self.save_session();
         }
     }
 
@@ -242,6 +289,7 @@ impl App {
             }
         }
         self.refresh_tray_menu();
+        self.save_session();
     }
 
     pub fn handle_engine_event(&mut self, instance_id: u32, event: EngineEventKind, fling_velocity: Option<(f64, f64)>) {

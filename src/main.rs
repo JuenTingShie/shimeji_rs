@@ -43,6 +43,7 @@ unsafe extern "system" fn owner_window_proc(hwnd: HWND, msg: u32, wparam: WPARAM
 fn main() -> windows::core::Result<()> {
     let app_root = dirs_next::data_dir().expect("APPDATA must be resolvable on Windows").join("ShimejiRust");
     let library_root = app_root.join("mascots");
+    let session_path = app_root.join("session.json");
     logging::init(app_root.join("animations.log"));
 
     unsafe {
@@ -82,7 +83,7 @@ fn main() -> windows::core::Result<()> {
         DragAcceptFiles(owner, true);
 
         let tray = TrayIcon::create().expect("failed to create tray icon");
-        let mut app = App::new(library_root, owner, tray);
+        let mut app = App::new(library_root, session_path, owner, tray);
         SetTimer(Some(owner), TICK_TIMER_ID, TICK_INTERVAL_MS, None);
 
         let mut msg = MSG::default();
