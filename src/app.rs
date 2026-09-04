@@ -8,13 +8,13 @@ use shimeji::importer::catalog::CatalogEntry;
 use shimeji::state_machine::{StateMachine, StateMachineSnapshot};
 use shimeji::tray::TrayIcon;
 use shimeji::window::mascot_window::MascotWindow;
-use shimeji::window::settings_window::SettingsWindow;
 use image::imageops::{resize, FilterType};
 use image::RgbaImage;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::UI::WindowsAndMessaging::{DestroyWindow, GetWindowRect};
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 const IDLE_THRESHOLD_TICKS: u32 = 3600;
@@ -77,6 +77,8 @@ pub struct App {
     pub tray: TrayIcon,
     pub owner: HWND,
     next_instance_id: u32,
+    open_settings_instances: HashSet<u32>,
+    open_settings_hwnds: HashMap<u32, HWND>,
 }
 
 impl App {
@@ -88,7 +90,17 @@ impl App {
             Duration::from_millis(150),
         );
         tray.set_menu(shimeji::tray::build_menu(&catalog));
-        App { library_root, catalog, mascots: Vec::new(), environment, tray, owner, next_instance_id: 1 }
+        App {
+            library_root,
+            catalog,
+            mascots: Vec::new(),
+            environment,
+            tray,
+            owner,
+            next_instance_id: 1,
+            open_settings_instances: HashSet::new(),
+            open_settings_hwnds: HashMap::new(),
+        }
     }
 
     pub fn import_from_bytes(&mut self, zip_bytes: &[u8]) {
@@ -151,15 +163,22 @@ impl App {
     }
 
     pub fn open_settings(&mut self, instance_id: u32) {
+        if self.open_settings_instances.contains(&instance_id) {
+            return;
+        }
         let Some(mascot) = self.mascots.iter().find(|m| m.id == instance_id) else { return };
         let scale_pct = (mascot.scale * 100.0).round() as i32;
         let speed_pct = (mascot.speed * 100.0).round() as i32;
-        if let Ok(settings) = SettingsWindow::create(self.owner, instance_id, scale_pct, speed_pct) {
-            // A settings window is itself a real, visible, titled top-level window -- excluded
-            // from the desktop window list for the same reason mascot windows are (see spawn's
-            // comment above); removed again in settings_window_closed.
-            self.environment.window_source.exclude.push(settings.hwnd);
-        }
+        self.open_settings_instances.insert(instance_id);
+        crate::settings_ui::open_settings_window(self.owner, instance_id, scale_pct, speed_pct);
+    }
+
+    pub fn settings_window_opened(&mut self, instance_id: u32, hwnd_raw: isize) {
+        let hwnd = HWND(hwnd_raw as *mut _);
+        self.open_settings_hwnds.insert(instance_id, hwnd);
+        // A settings window is itself a real, visible, titled top-level window -- excluded from
+        // the desktop window list for the same reason mascot windows are (see spawn's comment).
+        self.environment.window_source.exclude.push(hwnd);
     }
 
     pub fn set_scale(&mut self, instance_id: u32, pct: i32) {
@@ -174,8 +193,11 @@ impl App {
         }
     }
 
-    pub fn settings_window_closed(&mut self, hwnd_raw: usize) {
-        self.environment.window_source.exclude.retain(|h| h.0 as usize != hwnd_raw);
+    pub fn settings_window_closed(&mut self, instance_id: u32) {
+        self.open_settings_instances.remove(&instance_id);
+        if let Some(hwnd) = self.open_settings_hwnds.remove(&instance_id) {
+            self.environment.window_source.exclude.retain(|h| *h != hwnd);
+        }
     }
 
     pub fn close(&mut self, instance_id: u32) {
