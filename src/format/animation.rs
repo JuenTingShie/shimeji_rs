@@ -26,6 +26,8 @@ pub struct Animation {
     pub auto: Option<AutoBehavior>,
     #[serde(default)]
     pub border_transitions: Vec<BorderTransition>,
+    #[serde(default)]
+    pub event_transitions: Vec<EventRule>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -178,6 +180,34 @@ mod tests {
         assert_eq!(frame.dx, 0);
         assert_eq!(frame.dy, 0);
         assert_eq!(frame.duration_ticks, 602);
+    }
+
+    #[test]
+    fn animation_defaults_missing_event_transitions_to_empty() {
+        let json = r#"{
+            "key": "drag", "type": "USER", "subtype": "DRAG", "level": 1,
+            "loop": "LOOP", "direction": "ANY",
+            "frames": [ { "sprite": 9, "durationTicks": 8 } ]
+        }"#;
+        let anim: Animation = serde_json::from_str(json).unwrap();
+        assert!(anim.event_transitions.is_empty());
+    }
+
+    #[test]
+    fn parses_inline_event_transitions_on_an_animation() {
+        let json = r#"{
+            "key": "drag", "type": "USER", "subtype": "DRAG", "level": 1,
+            "loop": "LOOP", "direction": "ANY",
+            "frames": [ { "sprite": 9, "durationTicks": 8 } ],
+            "eventTransitions": [
+                { "event": "DRAG_END", "from": "drag", "to": "fall", "setFacing": "RANDOM" }
+            ]
+        }"#;
+        let anim: Animation = serde_json::from_str(json).unwrap();
+        assert_eq!(anim.event_transitions.len(), 1);
+        assert_eq!(anim.event_transitions[0].event, EngineEventKind::DragEnd);
+        assert_eq!(anim.event_transitions[0].from.as_deref(), Some("drag"));
+        assert_eq!(anim.event_transitions[0].to.as_deref(), Some("fall"));
     }
 
     #[test]
