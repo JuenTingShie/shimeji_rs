@@ -1,6 +1,6 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Manifest {
     pub schema_version: u32,
@@ -21,7 +21,7 @@ pub struct Manifest {
     pub license: LicenseInfo,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnimationSchemaRef {
     pub path: String,
@@ -29,7 +29,7 @@ pub struct AnimationSchemaRef {
     pub version: u32,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpriteSheetInfo {
     #[serde(rename = "type")]
@@ -40,17 +40,17 @@ pub struct SpriteSheetInfo {
     pub size: [u32; 2],
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreviewInfo {
     pub thumbnail: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthorInfo {
     pub name: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LicenseInfo {
     #[serde(rename = "type")]
@@ -77,5 +77,15 @@ mod tests {
         assert_eq!(manifest.sprites.size, [16, 16]);
         assert_eq!(manifest.sprites.base_path, "sprites/");
         assert_eq!(manifest.sprites.file_pattern, "%04d.webp");
+    }
+
+    #[test]
+    fn manifest_round_trips_through_json() {
+        let json = std::fs::read_to_string("tests/fixtures/fixture_manifest.json").unwrap();
+        let manifest: Manifest = serde_json::from_str(&json).unwrap();
+        let re_encoded = serde_json::to_string(&manifest).unwrap();
+        let round_tripped: Manifest = serde_json::from_str(&re_encoded).unwrap();
+        assert_eq!(round_tripped.name, manifest.name);
+        assert_eq!(round_tripped.sprites.sprite_count, manifest.sprites.sprite_count);
     }
 }

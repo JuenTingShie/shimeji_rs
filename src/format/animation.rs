@@ -1,6 +1,6 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnimationSchema {
     pub schema_id: String,
     pub version: u32,
@@ -10,7 +10,7 @@ pub struct AnimationSchema {
     pub events: Vec<EventRule>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Animation {
     pub key: String,
@@ -30,7 +30,7 @@ pub struct Animation {
     pub event_transitions: Vec<EventRule>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Frame {
     pub sprite: u32,
     #[serde(default)]
@@ -41,7 +41,7 @@ pub struct Frame {
     pub duration_ticks: u32,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutoBehavior {
     #[serde(default)]
@@ -52,7 +52,7 @@ pub struct AutoBehavior {
     pub max_duration_ticks: Option<MaxDurationTicks>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChoiceItem {
     pub to: String,
@@ -63,7 +63,7 @@ pub struct ChoiceItem {
     pub min_level: Option<u8>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TimerRule {
     pub choices: Vec<ChoiceItem>,
@@ -77,7 +77,7 @@ fn default_chance() -> f64 {
     1.0
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum MaxDurationTicks {
     Fixed(u32),
@@ -89,7 +89,7 @@ pub enum MaxDurationTicks {
     },
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BorderTransition {
     pub when: Edge,
@@ -98,7 +98,7 @@ pub struct BorderTransition {
     pub choices: Vec<ChoiceItem>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EventRule {
     pub event: EngineEventKind,
@@ -122,7 +122,7 @@ pub struct EventRule {
     pub allowed_types: Option<Vec<SurfaceType>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum Edge {
     Left,
@@ -131,7 +131,7 @@ pub enum Edge {
     Bottom,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum Direction {
     Left,
@@ -139,7 +139,7 @@ pub enum Direction {
     Any,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum SurfaceType {
     Ground,
@@ -149,14 +149,14 @@ pub enum SurfaceType {
     User,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum LoopMode {
     Oneshot,
     Loop,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum EngineEventKind {
     DragStart,
@@ -275,5 +275,15 @@ mod tests {
             })
             .unwrap();
         assert_eq!(tap_level4_ground.choices.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn animation_schema_round_trips_through_json() {
+        let json = std::fs::read_to_string("tests/fixtures/fixture_animation.json").unwrap();
+        let schema: AnimationSchema = serde_json::from_str(&json).unwrap();
+        let re_encoded = serde_json::to_string(&schema).unwrap();
+        let round_tripped: AnimationSchema = serde_json::from_str(&re_encoded).unwrap();
+        assert_eq!(round_tripped.animations.len(), schema.animations.len());
+        assert_eq!(round_tripped.events.len(), schema.events.len());
     }
 }
