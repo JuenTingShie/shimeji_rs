@@ -27,3 +27,4 @@ zip = "8.6.0"
 roxmltree = "0.21.1"
 
 [dev-dependencies]
+image = { version = "0.25.10", default-features = false, features = ["png"] }

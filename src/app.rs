@@ -107,9 +107,12 @@ impl App {
 
     pub fn import_from_bytes(&mut self, zip_bytes: &[u8]) {
         match shimeji::importer::import_zip(zip_bytes, &self.library_root) {
-            Ok(_entry) => {
+            Ok(result) => {
                 self.catalog = shimeji::importer::catalog::load_catalog(&self.library_root).unwrap_or_default();
                 self.refresh_tray_menu();
+                for name in &result.skipped {
+                    crate::logging::log_error("import", &format!("shimeji-ee: could not translate '{name}', skipped"));
+                }
             }
             Err(err) => crate::logging::log_error("import", &err.to_string()),
         }

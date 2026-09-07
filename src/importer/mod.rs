@@ -16,12 +16,32 @@ pub enum ImportError {
     InvalidBundle(#[from] BundleError),
     #[error(transparent)]
     Catalog(#[from] CatalogError),
+    #[error("could not translate shimeji-ee mascot: {0}")]
+    ShimejiEe(#[from] shimeji_ee::ShimejiEeError),
 }
 
-pub fn import_zip(zip_bytes: &[u8], library_root: &Path) -> Result<CatalogEntry, ImportError> {
+#[derive(Debug)]
+pub struct ImportResult {
+    pub entry: CatalogEntry,
+    pub skipped: Vec<String>,
+}
+
+pub fn import_zip(zip_bytes: &[u8], library_root: &Path) -> Result<ImportResult, ImportError> {
     let scratch = tempfile::tempdir()?;
     let mut archive = zip::ZipArchive::new(Cursor::new(zip_bytes))?;
     archive.extract(scratch.path())?;
+
+    let skipped = if !scratch.path().join("manifest.json").exists() {
+        match shimeji_ee::try_import(scratch.path())? {
+            Some(synthesized) => {
+                synthesized.write_into(scratch.path())?;
+                synthesized.skipped
+            }
+            None => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    };
 
     let bundle = MascotBundle::load(scratch.path())?;
 
@@ -36,7 +56,7 @@ pub fn import_zip(zip_bytes: &[u8], library_root: &Path) -> Result<CatalogEntry,
 
     let entry = CatalogEntry { slug: slug.clone(), name: bundle.manifest.name.clone(), dir: target_dir };
     add_entry(library_root, entry.clone())?;
-    Ok(entry)
+    Ok(ImportResult { entry, skipped })
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
