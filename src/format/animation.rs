@@ -31,7 +31,9 @@ pub struct Animation {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Frame {
     pub sprite: u32,
+    #[serde(default)]
     pub dx: i32,
+    #[serde(default)]
     pub dy: i32,
     #[serde(rename = "durationTicks")]
     pub duration_ticks: u32,
@@ -167,6 +169,16 @@ pub enum EngineEventKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_defaults_missing_dx_dy_to_zero() {
+        let json = r#"{ "sprite": 7, "durationTicks": 602 }"#;
+        let frame: Frame = serde_json::from_str(json).unwrap();
+        assert_eq!(frame.sprite, 7);
+        assert_eq!(frame.dx, 0);
+        assert_eq!(frame.dy, 0);
+        assert_eq!(frame.duration_ticks, 602);
+    }
 
     #[test]
     fn parses_sample_animation_schema() {
