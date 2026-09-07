@@ -1,4 +1,5 @@
 use super::physics::{bake_fall, bake_jump};
+use super::xml;
 use super::xml::{RawAction, RawAnimationBlock, RawPose};
 use super::ShimejiEeError;
 use crate::format::animation::{
@@ -219,9 +220,80 @@ fn link(animations: &mut [Animation], from_key: &str, to_key: &str, duration_tic
     }
 }
 
+const BEHAVIOR_FALLBACK_TICKS: u32 = 300;
+
+pub fn map_to_schema(
+    actions: &[RawAction],
+    behaviors: &[xml::RawBehavior],
+    img_dir: &Path,
+) -> Result<(crate::format::animation::AnimationSchema, Vec<SpriteFile>, Vec<String>), ShimejiEeError> {
+    let MappedActions { mut animations, events, default_animation, sprites, mut skipped, leaf, sequences } =
+        map_actions(actions, img_dir)?;
+
+    apply_behaviors(behaviors, &mut animations, &leaf, &sequences, &mut skipped);
+
+    let schema = crate::format::animation::AnimationSchema {
+        schema_id: "shimeji_ee_import_v1".to_string(),
+        version: 1,
+        default_animation: default_animation.clone(),
+        initial_candidates: vec![default_animation],
+        animations,
+        events,
+    };
+
+    Ok((schema, sprites, skipped))
+}
+
+fn apply_behaviors(
+    behaviors: &[xml::RawBehavior],
+    animations: &mut [Animation],
+    leaf: &HashMap<String, String>,
+    sequences: &HashMap<String, (String, String)>,
+    skipped: &mut Vec<String>,
+) {
+    for behavior in behaviors {
+        if behavior.next.is_empty() {
+            continue;
+        }
+        let Some(exit) = resolve_exit(&behavior.name, leaf, sequences) else {
+            skipped.push(behavior.name.clone());
+            continue;
+        };
+
+        let mut choices = Vec::new();
+        for r in &behavior.next {
+            if r.condition.is_some() {
+                skipped.push(r.name.clone());
+                continue;
+            }
+            match resolve_entry(&r.name, leaf, sequences) {
+                Some(entry) => choices.push(ChoiceItem { to: entry, weight: r.frequency as f64, set_facing: None, min_level: None }),
+                None => skipped.push(r.name.clone()),
+            }
+        }
+        if choices.is_empty() {
+            continue;
+        }
+
+        let Some(anim) = animations.iter_mut().find(|a| a.key == exit) else { continue };
+        let auto = anim.auto.get_or_insert_with(AutoBehavior::default);
+
+        // on_finish/on_timer here follow the same loop_mode-driven rule Sequence-step
+        // chaining (`link`, above) uses, so any rule chaining already attached always uses
+        // the same mechanism we're about to use: extend the existing on_finish list, or add
+        // our own dedicated on_timer rule alongside whatever chaining already added.
+        if matches!(anim.loop_mode, LoopMode::Oneshot) {
+            auto.on_finish.extend(choices);
+        } else {
+            auto.on_timer.push(TimerRule { choices, min_ticks: BEHAVIOR_FALLBACK_TICKS, max_ticks: BEHAVIOR_FALLBACK_TICKS, chance: 1.0 });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::xml::RawBehavior;
 
     fn literal_action(name: &str, kind: &str, border_type: Option<&str>, poses: Vec<RawPose>) -> RawAction {
         RawAction {
@@ -447,5 +519,70 @@ mod tests {
         assert!(mapped.sprites.iter().any(|s| s.source == Path::new("/mascots/img/Test/falling.png")));
         let indices: std::collections::HashSet<u32> = mapped.sprites.iter().map(|s| s.index).collect();
         assert_eq!(indices.len(), mapped.sprites.len(), "every sprite index must be unique");
+    }
+
+    fn behavior(name: &str, next: Vec<(&str, u32, Option<&str>)>) -> RawBehavior {
+        RawBehavior {
+            name: name.to_string(),
+            frequency: 0,
+            hidden: false,
+            condition: None,
+            next: next
+                .into_iter()
+                .map(|(n, freq, cond)| super::super::xml::RawBehaviorRef {
+                    name: n.to_string(),
+                    frequency: freq,
+                    condition: cond.map(str::to_string),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn map_to_schema_attaches_behaviors_choices_to_the_exit_anchor() {
+        let mut actions = fall_and_dragged();
+        actions.push(literal_action("Walk", "Move", Some("Floor"), vec![pose("/w.png", -2, 0, 6)]));
+        actions.push(literal_action("Stand", "Stay", Some("Floor"), vec![pose("/s.png", 0, 0, 250)]));
+        let behaviors = vec![behavior("Stand", vec![("Walk", 100, None), ("Unknown", 1, None), ("Walk", 50, Some("${cond}"))])];
+
+        let (schema, _sprites, skipped) = map_to_schema(&actions, &behaviors, Path::new("/img")).unwrap();
+
+        let stand = schema.animations.iter().find(|a| a.key == "Stand").unwrap();
+        let auto = stand.auto.as_ref().expect("Stand should have gained an on_timer rule from behaviors.xml");
+        assert_eq!(auto.on_timer.len(), 1);
+        assert_eq!(auto.on_timer[0].choices.len(), 1, "the unresolvable ref and the condition-gated ref must be dropped");
+        assert_eq!(auto.on_timer[0].choices[0].to, "Walk");
+        assert_eq!(auto.on_timer[0].choices[0].weight, 100.0);
+        assert!(skipped.contains(&"Unknown".to_string()));
+        assert!(skipped.iter().filter(|s| s.as_str() == "Walk").count() >= 1, "the condition-gated Walk ref must be recorded as skipped too");
+    }
+
+    #[test]
+    fn map_to_schema_skips_a_behavior_whose_name_does_not_resolve() {
+        let actions = fall_and_dragged();
+        let behaviors = vec![behavior("GhostBehavior", vec![("Falling", 1, None)])];
+        let (_schema, _sprites, skipped) = map_to_schema(&actions, &behaviors, Path::new("/img")).unwrap();
+        assert!(skipped.contains(&"GhostBehavior".to_string()));
+    }
+
+    #[test]
+    fn map_to_schema_appends_behaviors_choices_onto_an_existing_on_finish_from_chaining() {
+        let mut actions = fall_and_dragged();
+        actions.push(literal_action("Bouncing", "Animate", Some("Floor"), vec![pose("/b.png", 0, 0, 4)]));
+        actions.push(sequence("Land", vec![("Falling", None), ("Bouncing", None)]));
+        let behaviors = vec![behavior("Falling", vec![("Bouncing", 5, None)])];
+
+        let (schema, _sprites, _skipped) = map_to_schema(&actions, &behaviors, Path::new("/img")).unwrap();
+        let falling = schema.animations.iter().find(|a| a.key == "Falling").unwrap();
+        let on_finish = &falling.auto.as_ref().unwrap().on_finish;
+        assert_eq!(on_finish.len(), 2, "the chain's own link plus the behaviors.xml choice");
+    }
+
+    #[test]
+    fn map_to_schema_produces_a_shimeji_ee_import_schema_id() {
+        let (schema, _sprites, _skipped) = map_to_schema(&fall_and_dragged(), &[], Path::new("/img")).unwrap();
+        assert_eq!(schema.schema_id, "shimeji_ee_import_v1");
+        assert_eq!(schema.default_animation, "Falling");
+        assert_eq!(schema.initial_candidates, vec!["Falling".to_string()]);
     }
 }
