@@ -14,7 +14,7 @@ pub enum BundleError {
     AnimationParse(#[source] serde_json::Error),
     #[error("unsupported manifest schemaVersion {found} (expected 1)")]
     UnsupportedSchemaVersion { found: u32 },
-    #[error("unsupported animation schemaId '{found}' (expected legacy_default_v1)")]
+    #[error("unsupported animation schemaId '{found}' (expected legacy_default_v1 or pc_import_v1)")]
     UnsupportedAnimationSchema { found: String },
     #[error("manifest declares {declared} sprites but {found} were found under {base_path}")]
     SpriteCountMismatch { declared: u32, found: usize, base_path: PathBuf },
@@ -23,6 +23,8 @@ pub enum BundleError {
     #[error("{context} references unknown animation key '{key}'")]
     UnknownAnimationKey { context: String, key: String },
 }
+
+const SUPPORTED_ANIMATION_SCHEMAS: &[&str] = &["legacy_default_v1", "pc_import_v1"];
 
 #[derive(Debug)]
 pub struct MascotBundle {
@@ -49,7 +51,7 @@ impl MascotBundle {
         let animation: AnimationSchema =
             serde_json::from_str(&animation_text).map_err(BundleError::AnimationParse)?;
 
-        if animation.schema_id != "legacy_default_v1" {
+        if !SUPPORTED_ANIMATION_SCHEMAS.contains(&animation.schema_id.as_str()) {
             return Err(BundleError::UnsupportedAnimationSchema { found: animation.schema_id.clone() });
         }
 
