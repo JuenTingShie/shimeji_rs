@@ -1,4 +1,5 @@
 pub mod catalog;
+pub mod shimeji_ee;
 
 use crate::format::bundle::{BundleError, MascotBundle};
 use catalog::{add_entry, CatalogEntry, CatalogError};
