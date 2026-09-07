@@ -3,7 +3,8 @@ use super::xml;
 use super::xml::{RawAction, RawAnimationBlock, RawPose};
 use super::ShimejiEeError;
 use crate::format::animation::{
-    Animation, AutoBehavior, ChoiceItem, Direction, EngineEventKind, EventRule, Frame, LoopMode, SurfaceType, TimerRule,
+    Animation, AutoBehavior, BorderTransition, ChoiceItem, Direction, Edge, EngineEventKind, EventRule, Frame, LoopMode,
+    SurfaceType, TimerRule,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -185,8 +186,39 @@ fn resolve_sequence(
     sequences: &HashMap<String, (String, String)>,
     animations: &mut [Animation],
 ) -> Option<(String, String)> {
-    let mut resolved = Vec::with_capacity(action.refs.len());
-    for r in &action.refs {
+    // shimeji-ee's own border-hit branch idiom: a physics action (Fall/Jump) immediately
+    // followed by a Select choosing floor-landing vs. wall-landing continuations. Recognized
+    // narrowly -- exactly this two-step shape, with exactly one floor-conditioned branch and
+    // one unconditioned fallback -- rather than interpreting arbitrary Select/Condition logic.
+    if let [xml::RawSequenceStep::Reference(physics_ref), xml::RawSequenceStep::Select(branches)] = action.steps.as_slice() {
+        if let Some(anchors) = resolve_physics_select(physics_ref, branches, leaf, sequences, animations) {
+            return Some(anchors);
+        }
+        return None;
+    }
+
+    let refs: Vec<xml::RawActionRef> = action
+        .steps
+        .iter()
+        .map(|step| match step {
+            xml::RawSequenceStep::Reference(r) => Some(r.clone()),
+            xml::RawSequenceStep::Select(_) => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+
+    resolve_reference_chain(&refs, leaf, sequences, animations)
+}
+
+/// Resolves a chain of plain ActionReferences (no Select) -- shared by the common case above
+/// and by each branch of a physics Select's own internal ActionReference chain.
+fn resolve_reference_chain(
+    refs: &[xml::RawActionRef],
+    leaf: &HashMap<String, String>,
+    sequences: &HashMap<String, (String, String)>,
+    animations: &mut [Animation],
+) -> Option<(String, String)> {
+    let mut resolved = Vec::with_capacity(refs.len());
+    for r in refs {
         let entry = resolve_entry(&r.name, leaf, sequences)?;
         let exit = resolve_exit(&r.name, leaf, sequences)?;
         resolved.push((entry, exit));
@@ -198,7 +230,7 @@ fn resolve_sequence(
     for i in 0..resolved.len().saturating_sub(1) {
         let (_, from_exit) = resolved[i].clone();
         let (to_entry, _) = resolved[i + 1].clone();
-        let duration_ticks = action.refs[i].duration.as_deref().and_then(|d| d.parse::<u32>().ok());
+        let duration_ticks = refs[i].duration.as_deref().and_then(|d| d.parse::<u32>().ok());
         link(animations, &from_exit, &to_entry, duration_ticks);
     }
 
@@ -207,15 +239,69 @@ fn resolve_sequence(
     Some((entry, exit))
 }
 
+fn resolve_physics_select(
+    physics_ref: &xml::RawActionRef,
+    branches: &[xml::RawSelectBranch],
+    leaf: &HashMap<String, String>,
+    sequences: &HashMap<String, (String, String)>,
+    animations: &mut [Animation],
+) -> Option<(String, String)> {
+    let physics_entry = resolve_entry(&physics_ref.name, leaf, sequences)?;
+    resolve_exit(&physics_ref.name, leaf, sequences)?;
+
+    let [floor_branch, wall_branch] = branches else { return None };
+    let is_floor_branch = floor_branch.condition.as_deref().is_some_and(|c| c.to_lowercase().contains("floor"));
+    if !is_floor_branch || wall_branch.condition.is_some() {
+        return None;
+    }
+
+    let (floor_entry, floor_exit) = resolve_reference_chain(&floor_branch.refs, leaf, sequences, animations)?;
+    let (wall_entry, _wall_exit) = resolve_reference_chain(&wall_branch.refs, leaf, sequences, animations)?;
+
+    // A physics leaf like Falling is typically referenced by many different Sequences
+    // (Fall, Thrown, several Jump-landing variants in a real mascot) that all resolve to the
+    // same floor/wall outcome -- add each border edge at most once rather than accumulating a
+    // duplicate entry per referencing Sequence. If a later Sequence disagrees about the
+    // target for the same edge, the first one processed wins silently; shimeji_rs's model has
+    // no notion of "which calling Sequence" a shared leaf animation is currently serving.
+    let physics_anim = animations.iter_mut().find(|a| a.key == physics_entry)?;
+    push_border_transition_once(physics_anim, Edge::Bottom, &floor_entry);
+    push_border_transition_once(physics_anim, Edge::Left, &wall_entry);
+    push_border_transition_once(physics_anim, Edge::Right, &wall_entry);
+
+    Some((physics_entry, floor_exit))
+}
+
+fn push_border_transition_once(anim: &mut Animation, when: Edge, to: &str) {
+    if anim.border_transitions.iter().any(|bt| bt.when == when) {
+        return;
+    }
+    anim.border_transitions.push(BorderTransition {
+        when,
+        facing: None,
+        choices: vec![ChoiceItem { to: to.to_string(), weight: 1.0, set_facing: None, min_level: None }],
+    });
+}
+
 fn link(animations: &mut [Animation], from_key: &str, to_key: &str, duration_ticks: Option<u32>) {
     let Some(anim) = animations.iter_mut().find(|a| a.key == from_key) else { return };
-    let choice = ChoiceItem { to: to_key.to_string(), weight: 1.0, set_facing: None, min_level: None };
+    let is_oneshot = matches!(anim.loop_mode, LoopMode::Oneshot);
     let auto = anim.auto.get_or_insert_with(AutoBehavior::default);
 
-    if matches!(anim.loop_mode, LoopMode::Oneshot) {
-        auto.on_finish.push(choice);
+    // A leaf step referenced from many different Sequences (e.g. "Bouncing" following every
+    // Fall/Thrown/Jump-landing variant in a real mascot) would otherwise accumulate one
+    // duplicate choice per referencing Sequence -- add it at most once per target instead.
+    if is_oneshot {
+        if auto.on_finish.iter().any(|c| c.to == to_key) {
+            return;
+        }
+        auto.on_finish.push(ChoiceItem { to: to_key.to_string(), weight: 1.0, set_facing: None, min_level: None });
     } else {
+        if auto.on_timer.iter().any(|rule| rule.choices.iter().any(|c| c.to == to_key)) {
+            return;
+        }
         let ticks = duration_ticks.unwrap_or(SEQUENCE_STEP_FALLBACK_TICKS);
+        let choice = ChoiceItem { to: to_key.to_string(), weight: 1.0, set_facing: None, min_level: None };
         auto.on_timer.push(TimerRule { choices: vec![choice], min_ticks: ticks, max_ticks: ticks, chance: 1.0 });
     }
 }
@@ -308,12 +394,16 @@ mod tests {
             loop_flag: false,
             params: HashMap::new(),
             animations: vec![RawAnimationBlock { condition: None, poses }],
-            refs: Vec::new(),
+            steps: Vec::new(),
         }
     }
 
     fn pose(image: &str, dx: i32, dy: i32, duration: u32) -> RawPose {
         RawPose { image: image.to_string(), velocity: (dx, dy), duration }
+    }
+
+    fn action_ref(name: &str, duration: Option<&str>) -> xml::RawActionRef {
+        xml::RawActionRef { name: name.to_string(), duration: duration.map(str::to_string) }
     }
 
     fn sequence(name: &str, refs: Vec<(&str, Option<&str>)>) -> RawAction {
@@ -325,10 +415,35 @@ mod tests {
             loop_flag: false,
             params: HashMap::new(),
             animations: Vec::new(),
-            refs: refs
-                .into_iter()
-                .map(|(n, d)| super::super::xml::RawActionRef { name: n.to_string(), duration: d.map(str::to_string) })
-                .collect(),
+            steps: refs.into_iter().map(|(n, d)| xml::RawSequenceStep::Reference(action_ref(n, d))).collect(),
+        }
+    }
+
+    fn sequence_with_select(
+        name: &str,
+        physics_ref: &str,
+        floor_condition: Option<&str>,
+        floor_refs: Vec<(&str, Option<&str>)>,
+        wall_refs: Vec<(&str, Option<&str>)>,
+    ) -> RawAction {
+        RawAction {
+            name: name.to_string(),
+            kind: "Sequence".to_string(),
+            border_type: None,
+            class: None,
+            loop_flag: false,
+            params: HashMap::new(),
+            animations: Vec::new(),
+            steps: vec![
+                xml::RawSequenceStep::Reference(action_ref(physics_ref, None)),
+                xml::RawSequenceStep::Select(vec![
+                    xml::RawSelectBranch {
+                        condition: floor_condition.map(str::to_string),
+                        refs: floor_refs.into_iter().map(|(n, d)| action_ref(n, d)).collect(),
+                    },
+                    xml::RawSelectBranch { condition: None, refs: wall_refs.into_iter().map(|(n, d)| action_ref(n, d)).collect() },
+                ]),
+            ],
         }
     }
 
@@ -346,6 +461,75 @@ mod tests {
             sequence("Fall", vec![("Falling", None)]),
             sequence("Dragged", vec![("Pinched", None)]),
         ]
+    }
+
+    /// Mirrors the real test_mascot.zip shape: Fall = [Falling, Select[floor: Bouncing->Stand,
+    /// wall: GrabWall]], the exact structure that was silently dropped before Select parsing
+    /// existed, leaving Falling with no border_transitions and no way out of its baked physics.
+    fn fall_with_border_select_and_dragged() -> Vec<RawAction> {
+        let mut falling = literal_action("Falling", "Embedded", None, vec![pose("/falling.png", 0, 0, 250)]);
+        falling.class = Some("com.group_finity.mascot.action.Fall".to_string());
+        falling.params.insert("Gravity".to_string(), 2.0);
+
+        let mut dragged_pose_action = literal_action("Pinched", "Embedded", None, vec![pose("/pinched.png", 0, 0, 5)]);
+        dragged_pose_action.class = Some("com.group_finity.mascot.action.Dragged".to_string());
+
+        vec![
+            falling,
+            dragged_pose_action,
+            literal_action("Bouncing", "Animate", Some("Floor"), vec![pose("/bounce.png", 0, 0, 4)]),
+            literal_action("Stand", "Stay", Some("Floor"), vec![pose("/stand.png", 0, 0, 250)]),
+            literal_action("GrabWall", "Stay", Some("Wall"), vec![pose("/wall.png", 0, 0, 250)]),
+            sequence_with_select(
+                "Fall",
+                "Falling",
+                Some("${mascot.environment.floor.isOn(mascot.anchor)}"),
+                vec![("Bouncing", None), ("Stand", Some("150"))],
+                vec![("GrabWall", Some("100"))],
+            ),
+            sequence("Dragged", vec![("Pinched", None)]),
+        ]
+    }
+
+    #[test]
+    fn physics_select_attaches_border_transitions_to_the_physics_animation() {
+        let mapped = map_actions(&fall_with_border_select_and_dragged(), Path::new("/img")).unwrap();
+        let falling = mapped.animations.iter().find(|a| a.key == "Falling").unwrap();
+
+        let bottom = falling.border_transitions.iter().find(|bt| bt.when == Edge::Bottom).unwrap();
+        assert_eq!(bottom.choices[0].to, "Bouncing");
+
+        let left = falling.border_transitions.iter().find(|bt| bt.when == Edge::Left).unwrap();
+        let right = falling.border_transitions.iter().find(|bt| bt.when == Edge::Right).unwrap();
+        assert_eq!(left.choices[0].to, "GrabWall");
+        assert_eq!(right.choices[0].to, "GrabWall");
+    }
+
+    #[test]
+    fn physics_select_chains_the_floor_branchs_own_steps_and_reports_the_sequences_exit() {
+        let mapped = map_actions(&fall_with_border_select_and_dragged(), Path::new("/img")).unwrap();
+        let bouncing = mapped.animations.iter().find(|a| a.key == "Bouncing").unwrap();
+        let auto = bouncing.auto.as_ref().expect("Bouncing should chain to Stand");
+        assert_eq!(auto.on_finish[0].to, "Stand");
+        assert_eq!(mapped.sequences.get("Fall"), Some(&("Falling".to_string(), "Stand".to_string())));
+    }
+
+    #[test]
+    fn physics_select_with_two_floor_conditioned_branches_is_unresolvable() {
+        let mut actions = fall_with_border_select_and_dragged();
+        let fall = actions.iter_mut().find(|a| a.name == "Fall").unwrap();
+        fall.steps = vec![
+            xml::RawSequenceStep::Reference(action_ref("Falling", None)),
+            xml::RawSequenceStep::Select(vec![
+                xml::RawSelectBranch { condition: Some("floor".to_string()), refs: vec![action_ref("Bouncing", None)] },
+                xml::RawSelectBranch { condition: Some("floor".to_string()), refs: vec![action_ref("GrabWall", None)] },
+            ]),
+        ];
+        // Fall becomes unresolvable, and Fall is a required action (see
+        // missing_fall_action_is_an_error) -- the whole import fails rather than silently
+        // producing a bundle with no default_animation.
+        let err = map_actions(&actions, Path::new("/img")).unwrap_err();
+        assert!(matches!(err, ShimejiEeError::MissingRequiredAction(name) if name == "Fall"));
     }
 
     #[test]
@@ -452,6 +636,24 @@ mod tests {
         assert_eq!(auto.on_finish.len(), 1);
         assert_eq!(auto.on_finish[0].to, "Bouncing");
         assert_eq!(mapped.sequences.get("Land"), Some(&("Falling".to_string(), "Bouncing".to_string())));
+    }
+
+    #[test]
+    fn a_leaf_referenced_by_multiple_sequences_gets_only_one_choice_per_target() {
+        // Mirrors the real test_mascot.zip mascot: "Falling" is chained to "Bouncing" from several
+        // independent Sequences (Land here stands in for Fall/Thrown/JumpFromLeftEdgeOfIE/...).
+        let actions = {
+            let mut a = fall_and_dragged();
+            a.push(literal_action("Bouncing", "Animate", Some("Floor"), vec![pose("/b.png", 0, 0, 4)]));
+            a.push(sequence("Land", vec![("Falling", None), ("Bouncing", None)]));
+            a.push(sequence("LandAgain", vec![("Falling", None), ("Bouncing", None)]));
+            a.push(sequence("LandYetAgain", vec![("Falling", None), ("Bouncing", None)]));
+            a
+        };
+        let mapped = map_actions(&actions, Path::new("/img")).unwrap();
+        let falling = mapped.animations.iter().find(|a| a.key == "Falling").unwrap();
+        let auto = falling.auto.as_ref().unwrap();
+        assert_eq!(auto.on_finish.len(), 1, "three Sequences chaining to the same target must not triple the choice list");
     }
 
     #[test]

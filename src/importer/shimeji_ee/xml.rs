@@ -10,6 +10,22 @@ pub struct RawAction {
     pub loop_flag: bool,
     pub params: HashMap<String, f64>,
     pub animations: Vec<RawAnimationBlock>,
+    pub steps: Vec<RawSequenceStep>,
+}
+
+#[derive(Debug, Clone)]
+pub enum RawSequenceStep {
+    Reference(RawActionRef),
+    /// A nested, unnamed `<Action Type="Select">` -- shimeji-ee's border-hit branch construct
+    /// (e.g. Fall/Thrown: fall physics, then branch on whether the mascot landed on a floor
+    /// or a wall). Each candidate is either a bare `<ActionReference>` or a nested
+    /// `<Action Type="Sequence" Condition="...">` wrapping its own ActionReference chain.
+    Select(Vec<RawSelectBranch>),
+}
+
+#[derive(Debug, Clone)]
+pub struct RawSelectBranch {
+    pub condition: Option<String>,
     pub refs: Vec<RawActionRef>,
 }
 
@@ -97,16 +113,44 @@ fn parse_action(node: roxmltree::Node) -> RawAction {
     }
 
     let mut animations = Vec::new();
-    let mut refs = Vec::new();
+    let mut steps = Vec::new();
     for child in node.children().filter(|n| n.is_element()) {
         match child.tag_name().name() {
             "Animation" => animations.push(parse_animation_block(child)),
-            "ActionReference" => refs.push(parse_action_ref(child)),
+            "ActionReference" => steps.push(RawSequenceStep::Reference(parse_action_ref(child))),
+            "Action" if child.attribute("Type") == Some("Select") => {
+                steps.push(RawSequenceStep::Select(parse_select_branches(child)));
+            }
             _ => {}
         }
     }
 
-    RawAction { name, kind, border_type, class, loop_flag, params, animations, refs }
+    RawAction { name, kind, border_type, class, loop_flag, params, animations, steps }
+}
+
+fn parse_select_branches(select_node: roxmltree::Node) -> Vec<RawSelectBranch> {
+    let mut branches = Vec::new();
+    for child in select_node.children().filter(|n| n.is_element()) {
+        match child.tag_name().name() {
+            "ActionReference" => {
+                branches.push(RawSelectBranch {
+                    condition: child.attribute("Condition").map(str::to_string),
+                    refs: vec![parse_action_ref(child)],
+                });
+            }
+            "Action" => {
+                let condition = child.attribute("Condition").map(str::to_string);
+                let refs = child
+                    .children()
+                    .filter(|n| n.is_element() && n.tag_name().name() == "ActionReference")
+                    .map(parse_action_ref)
+                    .collect();
+                branches.push(RawSelectBranch { condition, refs });
+            }
+            _ => {}
+        }
+    }
+    branches
 }
 
 fn parse_animation_block(node: roxmltree::Node) -> RawAnimationBlock {
@@ -207,6 +251,13 @@ mod tests {
     <ActionList>
         <Action Name="Fall" Type="Sequence" Loop="false">
             <ActionReference Name="Falling"/>
+            <Action Type="Select">
+                <Action Type="Sequence" Condition="${mascot.environment.floor.isOn(mascot.anchor)}">
+                    <ActionReference Name="Bouncing"/>
+                    <ActionReference Name="Stand" Duration="${100+Math.random()*100}" />
+                </Action>
+                <ActionReference Name="GrabWall" Duration="100" />
+            </Action>
         </Action>
         <Action Name="ThrowIe" Type="Sequence" Loop="false">
             <ActionReference Name="WalkWithIe" TargetX="${mascot.environment.activeIE.left}" />
@@ -266,15 +317,48 @@ mod tests {
     #[test]
     fn parses_sequence_action_references_including_el_and_literal_durations() {
         let actions = parse_actions(ACTIONS_XML).unwrap();
-        let fall = actions.iter().find(|a| a.name == "Fall").unwrap();
-        assert_eq!(fall.kind, "Sequence");
-        assert_eq!(fall.refs.len(), 1);
-        assert_eq!(fall.refs[0].name, "Falling");
-
         let throw = actions.iter().find(|a| a.name == "ThrowIe").unwrap();
-        assert_eq!(throw.refs.len(), 2);
-        assert_eq!(throw.refs[1].name, "Stand");
-        assert_eq!(throw.refs[1].duration.as_deref(), Some("20"));
+        assert_eq!(throw.kind, "Sequence");
+        assert_eq!(throw.steps.len(), 2);
+        assert_eq!(reference_name(&throw.steps[1]), "Stand");
+        assert_eq!(reference_duration(&throw.steps[1]).as_deref(), Some("20"));
+    }
+
+    #[test]
+    fn parses_a_select_branch_following_a_reference() {
+        let actions = parse_actions(ACTIONS_XML).unwrap();
+        let fall = actions.iter().find(|a| a.name == "Fall").unwrap();
+        assert_eq!(fall.steps.len(), 2);
+        assert_eq!(reference_name(&fall.steps[0]), "Falling");
+
+        let RawSequenceStep::Select(branches) = &fall.steps[1] else { panic!("expected a Select step") };
+        assert_eq!(branches.len(), 2);
+
+        let floor_branch = &branches[0];
+        assert!(floor_branch.condition.as_deref().unwrap().contains("floor"));
+        assert_eq!(floor_branch.refs.len(), 2);
+        assert_eq!(floor_branch.refs[0].name, "Bouncing");
+        assert_eq!(floor_branch.refs[1].name, "Stand");
+
+        let wall_branch = &branches[1];
+        assert!(wall_branch.condition.is_none());
+        assert_eq!(wall_branch.refs.len(), 1);
+        assert_eq!(wall_branch.refs[0].name, "GrabWall");
+        assert_eq!(wall_branch.refs[0].duration.as_deref(), Some("100"));
+    }
+
+    fn reference_name(step: &RawSequenceStep) -> &str {
+        match step {
+            RawSequenceStep::Reference(r) => &r.name,
+            RawSequenceStep::Select(_) => panic!("expected a Reference step"),
+        }
+    }
+
+    fn reference_duration(step: &RawSequenceStep) -> Option<String> {
+        match step {
+            RawSequenceStep::Reference(r) => r.duration.clone(),
+            RawSequenceStep::Select(_) => panic!("expected a Reference step"),
+        }
     }
 
     #[test]
