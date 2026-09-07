@@ -3,7 +3,7 @@ use shimeji::environment::win32::{Win32MonitorSource, Win32WindowSource};
 use shimeji::environment::{EnvironmentTracker, Rect};
 use shimeji::format::animation::{Edge, EngineEventKind};
 use shimeji::format::bundle::MascotBundle;
-use shimeji::format::sprites::{decode_sprite, sprite_filename};
+use shimeji::format::sprites::{decode_sprite, oriented_sprite, sprite_filename};
 use shimeji::importer::catalog::CatalogEntry;
 use shimeji::state_machine::{StateMachine, StateMachineSnapshot};
 use shimeji::tray::TrayIcon;
@@ -137,6 +137,7 @@ impl App {
             .join(&bundle.manifest.sprites.base_path)
             .join(sprite_filename(&bundle.manifest.sprites.file_pattern, default_anim.frames[0].sprite));
         let frame = decode_sprite(&sprite_path).map_err(|_| windows::core::Error::empty())?;
+        let frame = oriented_sprite(frame, sm_state.facing);
 
         let id = self.next_instance_id;
         self.next_instance_id += 1;
@@ -445,6 +446,7 @@ fn step_one_mascot(mascot: &mut MascotInstance, screen: &Rect, monitors: &[Rect]
         .join(&mascot.bundle.manifest.sprites.base_path)
         .join(sprite_filename(&mascot.bundle.manifest.sprites.file_pattern, out.sprite_index));
     if let Ok(frame) = decode_sprite(&sprite_path) {
+        let frame = oriented_sprite(frame, sm.facing());
         mascot.window.update_frame(&scaled_frame(frame, mascot.scale));
     }
 
