@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<Mascot xmlns="http://www.group-finity.com/Mascot" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.group-finity.com/Mascot Mascot.xsd">
+    <BehaviorList>
+        <Behavior Name="Stand" Frequency="0">
+            <NextBehavior Add="false">
+                <BehaviorReference Name="Walk" Frequency="100" />
+                <BehaviorReference Name="SitAndSpin" Frequency="1" />
+                <BehaviorReference Name="Walk" Frequency="50" Condition="${mascot.environment.activeIE.exists}" />
+            </NextBehavior>
+        </Behavior>
+    </BehaviorList>
+</Mascot>

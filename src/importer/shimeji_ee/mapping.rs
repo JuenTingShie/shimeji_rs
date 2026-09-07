@@ -233,7 +233,11 @@ pub fn map_to_schema(
     apply_behaviors(behaviors, &mut animations, &leaf, &sequences, &mut skipped);
 
     let schema = crate::format::animation::AnimationSchema {
-        schema_id: "shimeji_ee_import_v1".to_string(),
+        // Structurally identical to legacy_default_v1 (flat top-level `events`, no inline
+        // event_transitions) -- reuse that schema_id rather than inventing a new one, since
+        // MascotBundle::load's schema allowlist is a Global Constraint this feature never
+        // touches.
+        schema_id: "legacy_default_v1".to_string(),
         version: 1,
         default_animation: default_animation.clone(),
         initial_candidates: vec![default_animation],
@@ -579,9 +583,12 @@ mod tests {
     }
 
     #[test]
-    fn map_to_schema_produces_a_shimeji_ee_import_schema_id() {
+    fn map_to_schema_produces_a_legacy_default_v1_schema_id() {
         let (schema, _sprites, _skipped) = map_to_schema(&fall_and_dragged(), &[], Path::new("/img")).unwrap();
-        assert_eq!(schema.schema_id, "shimeji_ee_import_v1");
+        // Structurally identical to a hand-authored legacy_default_v1 bundle (flat top-level
+        // events, no inline event_transitions), so it's labeled the same way rather than
+        // requiring MascotBundle::load's schema allowlist to be touched.
+        assert_eq!(schema.schema_id, "legacy_default_v1");
         assert_eq!(schema.default_animation, "Falling");
         assert_eq!(schema.initial_candidates, vec!["Falling".to_string()]);
     }
