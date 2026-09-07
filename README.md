@@ -1,8 +1,9 @@
 # Shimeji (native Windows, no runtime install)
 
-A desktop mascot app. Import a mascot from a `.zip` (the `legacy_default_v1`
-manifest.json + animation.json + sprites/ schema) and it walks, falls, climbs,
-and hangs around your desktop — including on top of your other open windows.
+A desktop mascot app. Import a mascot from a `.zip` (manifest.json +
+animation.json + sprites/) and it walks, falls, climbs, and hangs around
+your desktop — including on top of your other open windows. Both the
+`legacy_default_v1` and `pc_import_v1` animation.json schemas are accepted.
 
 - **No install** — a single native `.exe`, no runtime or installer.
 - **Multiple mascots at once**, each independently draggable, flingable, and
