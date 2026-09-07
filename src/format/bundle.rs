@@ -14,7 +14,7 @@ pub enum BundleError {
     AnimationParse(#[source] serde_json::Error),
     #[error("unsupported manifest schemaVersion {found} (expected 1)")]
     UnsupportedSchemaVersion { found: u32 },
-    #[error("unsupported animation schemaId '{found}' (expected legacy_default_v1)")]
+    #[error("unsupported animation schemaId '{found}' (expected legacy_default_v1 or pc_import_v1)")]
     UnsupportedAnimationSchema { found: String },
     #[error("manifest declares {declared} sprites but {found} were found under {base_path}")]
     SpriteCountMismatch { declared: u32, found: usize, base_path: PathBuf },
@@ -23,6 +23,8 @@ pub enum BundleError {
     #[error("{context} references unknown animation key '{key}'")]
     UnknownAnimationKey { context: String, key: String },
 }
+
+const SUPPORTED_ANIMATION_SCHEMAS: &[&str] = &["legacy_default_v1", "pc_import_v1"];
 
 #[derive(Debug)]
 pub struct MascotBundle {
@@ -46,12 +48,19 @@ impl MascotBundle {
         let animation_path = dir.join(&manifest.animation_schema.path);
         let animation_text = std::fs::read_to_string(&animation_path)
             .map_err(|source| BundleError::Io { path: animation_path.clone(), source })?;
-        let animation: AnimationSchema =
+        let mut animation: AnimationSchema =
             serde_json::from_str(&animation_text).map_err(BundleError::AnimationParse)?;
 
-        if animation.schema_id != "legacy_default_v1" {
+        if !SUPPORTED_ANIMATION_SCHEMAS.contains(&animation.schema_id.as_str()) {
             return Err(BundleError::UnsupportedAnimationSchema { found: animation.schema_id.clone() });
         }
+
+        // Some exporters (pc_import_v1) attach event transitions to the animation they fire
+        // from instead of listing them in the schema's top-level `events` array; fold them in
+        // so StateMachine::apply_event (which only scans `events`) can still find them.
+        let inline_events =
+            animation.animations.iter().flat_map(|a| a.event_transitions.clone()).collect::<Vec<_>>();
+        animation.events.extend(inline_events);
 
         let sprites_dir = dir.join(&manifest.sprites.base_path);
         let found = (0..manifest.sprites.sprite_count)

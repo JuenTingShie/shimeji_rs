@@ -26,12 +26,16 @@ pub struct Animation {
     pub auto: Option<AutoBehavior>,
     #[serde(default)]
     pub border_transitions: Vec<BorderTransition>,
+    #[serde(default)]
+    pub event_transitions: Vec<EventRule>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Frame {
     pub sprite: u32,
+    #[serde(default)]
     pub dx: i32,
+    #[serde(default)]
     pub dy: i32,
     #[serde(rename = "durationTicks")]
     pub duration_ticks: u32,
@@ -167,6 +171,44 @@ pub enum EngineEventKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_defaults_missing_dx_dy_to_zero() {
+        let json = r#"{ "sprite": 7, "durationTicks": 602 }"#;
+        let frame: Frame = serde_json::from_str(json).unwrap();
+        assert_eq!(frame.sprite, 7);
+        assert_eq!(frame.dx, 0);
+        assert_eq!(frame.dy, 0);
+        assert_eq!(frame.duration_ticks, 602);
+    }
+
+    #[test]
+    fn animation_defaults_missing_event_transitions_to_empty() {
+        let json = r#"{
+            "key": "drag", "type": "USER", "subtype": "DRAG", "level": 1,
+            "loop": "LOOP", "direction": "ANY",
+            "frames": [ { "sprite": 9, "durationTicks": 8 } ]
+        }"#;
+        let anim: Animation = serde_json::from_str(json).unwrap();
+        assert!(anim.event_transitions.is_empty());
+    }
+
+    #[test]
+    fn parses_inline_event_transitions_on_an_animation() {
+        let json = r#"{
+            "key": "drag", "type": "USER", "subtype": "DRAG", "level": 1,
+            "loop": "LOOP", "direction": "ANY",
+            "frames": [ { "sprite": 9, "durationTicks": 8 } ],
+            "eventTransitions": [
+                { "event": "DRAG_END", "from": "drag", "to": "fall", "setFacing": "RANDOM" }
+            ]
+        }"#;
+        let anim: Animation = serde_json::from_str(json).unwrap();
+        assert_eq!(anim.event_transitions.len(), 1);
+        assert_eq!(anim.event_transitions[0].event, EngineEventKind::DragEnd);
+        assert_eq!(anim.event_transitions[0].from.as_deref(), Some("drag"));
+        assert_eq!(anim.event_transitions[0].to.as_deref(), Some("fall"));
+    }
 
     #[test]
     fn parses_sample_animation_schema() {
