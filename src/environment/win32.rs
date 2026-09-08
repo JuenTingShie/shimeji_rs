@@ -2,7 +2,7 @@ use super::{MonitorSource, Rect, WindowSource};
 use windows::core::BOOL;
 use windows::Win32::Foundation::{HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
-use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, HDC, HMONITOR};
+use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetWindowRect, GetWindowTextLengthW, IsWindowVisible, IsIconic,
 };
@@ -28,14 +28,19 @@ impl MonitorSource for Win32MonitorSource {
 }
 
 unsafe extern "system" fn monitor_enum_proc(
-    _hmonitor: HMONITOR,
+    hmonitor: HMONITOR,
     _hdc: HDC,
     rect: *mut RECT,
     lparam: LPARAM,
 ) -> BOOL {
     unsafe {
         let rects = &mut *(lparam.0 as *mut Vec<Rect>);
-        let r = *rect;
+        // The work area (rcWork) excludes the taskbar and any other app-reserved screen space,
+        // unlike the raw monitor rect -- using the raw rect here would put the floor underneath
+        // an always-on-top taskbar, letting mascots walk/land where the taskbar visually covers
+        // them instead of stopping on top of it. Fall back to the raw rect if the query fails.
+        let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+        let r = if GetMonitorInfoW(hmonitor, &mut info).as_bool() { info.rcWork } else { *rect };
         rects.push(Rect { left: r.left, top: r.top, right: r.right, bottom: r.bottom });
     }
     BOOL(1)
