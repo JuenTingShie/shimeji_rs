@@ -433,9 +433,18 @@ fn step_one_mascot(mascot: &mut MascotInstance, screen: &Rect, monitors: &[Rect]
     }
     mascot.window.move_to(mascot.x, mascot.y);
 
-    if sm.current_key() == "fling" && surface.edge_hit.is_some() {
-        if sm.apply_event(EngineEventKind::FlingEnd, surface, mascot.level, &mut mascot.rng) {
-            crate::logging::log_animation(mascot.id, "FlingEnd", sm.current_key());
+    if mascot.fling_velocity.is_some() && surface.edge_hit.is_some() {
+        // Key off fling_velocity rather than the current animation being named "fling": a
+        // bundle's own on_finish/on_timer/border-transition rules can move the state machine off
+        // that key before the mascot actually lands, and checking the key name would then never
+        // fire again, leaving fling_velocity accumulating gravity forever. Skip the wildcard
+        // FLING_END rule if a border transition already redirected the animation this same tick
+        // (e.g. a landing animation with its own Bottom/Left/Right transitions) so it doesn't get
+        // immediately overridden.
+        if !out.changed_animation {
+            if sm.apply_event(EngineEventKind::FlingEnd, surface, mascot.level, &mut mascot.rng) {
+                crate::logging::log_animation(mascot.id, "FlingEnd", sm.current_key());
+            }
         }
         mascot.fling_velocity = None;
     }
