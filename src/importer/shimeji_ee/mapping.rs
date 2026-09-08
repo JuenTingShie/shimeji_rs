@@ -59,8 +59,14 @@ pub(super) fn map_actions(actions: &[RawAction], img_dir: &Path) -> Result<Mappe
         .ok_or_else(|| ShimejiEeError::MissingRequiredAction("Dragged".to_string()))?;
 
     let events = vec![
+        // The engine never actually posts DragEnd (see window/mascot_window.rs's WM_LBUTTONUP
+        // handler: every mouse release is classified into Tap or FlingStart, never DragEnd), so
+        // those are the two rules that matter for "let go of the mascot" -- DragEnd/FlingEnd are
+        // kept only as harmless fallbacks in case that ever changes.
         wildcard_event(EngineEventKind::DragEnd, &default_animation),
         wildcard_event(EngineEventKind::FlingEnd, &default_animation),
+        wildcard_event(EngineEventKind::FlingStart, &default_animation),
+        wildcard_event(EngineEventKind::Tap, &default_animation),
         wildcard_event(EngineEventKind::DragStart, &dragged_entry),
     ];
 
@@ -706,9 +712,15 @@ mod tests {
     fn wires_fall_and_dragged_into_top_level_events() {
         let mapped = map_actions(&fall_and_dragged(), Path::new("/img")).unwrap();
         assert_eq!(mapped.default_animation, "Falling");
+        assert!(mapped.events.iter().any(|e| e.event == EngineEventKind::DragStart && e.to.as_deref() == Some("Pinched")));
+        // FlingStart and Tap are what the engine actually posts on mouse release (see
+        // window/mascot_window.rs) -- without these, releasing a dragged mascot leaves it frozen
+        // in its Dragged pose forever, since neither DragEnd nor a "fling"-named animation
+        // (both of which the schema also wires, as harmless fallbacks) is ever reached.
+        assert!(mapped.events.iter().any(|e| e.event == EngineEventKind::FlingStart && e.to.as_deref() == Some("Falling")));
+        assert!(mapped.events.iter().any(|e| e.event == EngineEventKind::Tap && e.to.as_deref() == Some("Falling")));
         assert!(mapped.events.iter().any(|e| e.event == EngineEventKind::DragEnd && e.to.as_deref() == Some("Falling")));
         assert!(mapped.events.iter().any(|e| e.event == EngineEventKind::FlingEnd && e.to.as_deref() == Some("Falling")));
-        assert!(mapped.events.iter().any(|e| e.event == EngineEventKind::DragStart && e.to.as_deref() == Some("Pinched")));
     }
 
     #[test]

@@ -436,9 +436,16 @@ fn step_one_mascot(mascot: &mut MascotInstance, screen: &Rect, monitors: &[Rect]
     }
     mascot.window.move_to(mascot.x, mascot.y);
 
-    if sm.current_key() == "fling" && surface.edge_hit.is_some() {
-        if sm.apply_event(EngineEventKind::FlingEnd, surface, mascot.level, &mut mascot.rng) {
-            crate::logging::log_animation(mascot.id, "FlingEnd", sm.current_key());
+    if mascot.fling_velocity.is_some() && surface.edge_hit.is_some() {
+        // Only ask the schema's FLING_END rules to redirect the animation if landing didn't
+        // already do so via the current animation's own border_transitions (e.g. shimeji-ee's
+        // baked Falling, which has no dedicated "fling" state and lands through the same
+        // Bottom/Left/Right transitions a normal fall uses) -- otherwise a schema-wide wildcard
+        // FLING_END rule would immediately override the just-applied landing animation.
+        if !out.changed_animation {
+            if sm.apply_event(EngineEventKind::FlingEnd, surface, mascot.level, &mut mascot.rng) {
+                crate::logging::log_animation(mascot.id, "FlingEnd", sm.current_key());
+            }
         }
         mascot.fling_velocity = None;
     }
